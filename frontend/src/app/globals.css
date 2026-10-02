@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  background: #080d13;
+  color: #e7edf2;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(ellipse at 80% 0%, rgb(44 103 92 / 12%), transparent 34rem),
+    #080d13;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.ag-grid-shell {
+  border: 1px solid #24313d;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+::selection {
+  color: #04130d;
+  background: #43d9a3;
+}

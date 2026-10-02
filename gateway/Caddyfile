@@ -1,0 +1,16 @@
+{
+	admin off
+}
+
+:8080 {
+	encode zstd gzip
+
+	@api path /api/* /health /openapi.json /docs /docs/* /redoc /redoc/*
+	handle @api {
+		reverse_proxy {$API_UPSTREAM}
+	}
+
+	handle {
+		reverse_proxy {$FRONTEND_UPSTREAM}
+	}
+}
