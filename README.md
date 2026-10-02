@@ -56,20 +56,23 @@ OriginSync AI solves this with an autonomous O.D.E.R. (Observe, Decide, Execute,
 🛡 RIGS Trust Engine Mathematics
 Settlement automation is guarded by the RIGS Scoring Engine. Neutral scores are refused; historical proof is mandatory for settlement execution.
 | Component | Weight | Metric Criteria & Evaluation Rules |
-|---|---|---|
+
 | Risk (R) | 35% | Evaluates compliance risk (Base default score: 0.35). Deductions occur for entity red-flags or jurisdictional discrepancies. |
 | Invoice Intent (I) | 25% | Invoice-to-manifest semantic alignment derived from multimodal document inspection. |
 | Historical Growth (G) | 15% | Evaluates trading velocity. Requires \ge 3 settled trades within both current and prior 90-day windows. |
 | Stakeholder Trust (S) | 25% | Historical beneficiary payout reliability. Requires \ge 3 prior successful payouts to the beneficiary. |
 > Fail-Closed Enforcement: If historical trade or beneficiary data is absent, G and S do not receive neutral filler scores; the system refuses automated settlement and holds funds for manual review.
-> 
+>
+
 🏆 Hackathon Sponsor Track Alignment
 | Sponsor Track | Integration & Technology Highlight | Implementation Location |
-|---|---|---|
+
 | PayPal AI & Agentic Commerce | Autonomous settlement trigger using PayPal Payouts & Orders SDK based on real-time AI trust validation. | backend/app/services/paypal.py |
 | AG Grid | Real-time, dark-themed telemetry control room featuring live tariff savings, trust status badges, and transaction streaming. | frontend/src/components/telemetry/ |
 | APIMatic | Exposes dynamic OpenAPI 3.1 definitions at /openapi.json for auto-generated, type-safe multi-language SDKs. | backend/app/main.py |
 | Render | Zero-downtime, containerized blueprint orchestration for multi-service deployment (render.yaml). | Root render.yaml |
+
+
 📁 Monorepo Structure
 originsync-ai/
 ├── backend/                  # FastAPI 3.11+ Async Engine
@@ -93,6 +96,8 @@ originsync-ai/
 ├── render.yaml               # Infrastructure-as-Code Blueprint for Render
 └── README.md                 # System Architecture & API Documentation
 
+
+
 🔒 Security & Cryptographic Verification
 Webhook HMAC-SHA256 Signing
 Incoming webhooks from PayPal, n8n, or external trade hubs require strict cryptographic authentication. Request headers must present:
@@ -101,6 +106,8 @@ Incoming webhooks from PayPal, n8n, or external trade hubs require strict crypto
 Database Security
  * Row-Level Security (RLS): Enforces organization-level isolation across trade_audits, tariff_rules, and trust_beneficiaries.
  * Beneficiary Access Control: trust_beneficiaries records require explicit administrator verification. Authenticated client tokens possess read-only access to trade logs and cannot alter payout targets.
+
+
 ⚡ Quickstart & Local Development
 Prerequisites
  * Python 3.11+
@@ -133,6 +140,8 @@ npm ci
 npm run dev
 
  * Control Room UI accessible at http://localhost:3000
+
+
 ⚙️ Environment Configuration
 Create a .env file in the root directory:
 # Supabase Configuration
