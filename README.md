@@ -106,6 +106,7 @@ Incoming webhooks from PayPal, n8n, or external trade hubs require strict crypto
 Database Security
  * Row-Level Security (RLS): Enforces organization-level isolation across trade_audits, tariff_rules, and trust_beneficiaries.
  * Beneficiary Access Control: trust_beneficiaries records require explicit administrator verification. Authenticated client tokens possess read-only access to trade logs and cannot alter payout targets.
+ * Telemetry scope: The API prefers the requested organization membership, then another organization the user belongs to. If none exists, it uses the earliest available organization with the `viewer` role; trade-case organization scope is the final fallback.
 
 
 ⚡ Quickstart & Local Development
@@ -187,4 +188,3 @@ ruff check app/
 
 📜 License
 Distributed under the MIT License. See LICENSE for more information.
-

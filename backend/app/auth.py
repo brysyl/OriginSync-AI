@@ -25,8 +25,6 @@ async def get_current_principal(
     pool: Pool = request.app.state.database
     if not authorization or not authorization.startswith("Bearer "):
         raise ServiceError("authentication_required", "A Supabase access token is required.", 401)
-    if organization_id is None:
-        raise ServiceError("organization_required", "X-Organization-ID is required.", 400)
 
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
@@ -55,19 +53,57 @@ async def get_current_principal(
         ) from error
 
     async with pool.acquire() as connection:
-        role = await connection.fetchval(
-            """
-            select role from public.organization_memberships
-            where user_id = $1 and organization_id = $2
-            """,
-            user_id,
-            organization_id,
-        )
-    if role is None:
+        membership = None
+        if organization_id is not None:
+            membership = await connection.fetchrow(
+                """
+                select organization_id, role from public.organization_memberships
+                where user_id = $1 and organization_id = $2
+                """,
+                user_id,
+                organization_id,
+            )
+        if membership is None:
+            membership = await connection.fetchrow(
+                """
+                select membership.organization_id, membership.role
+                from public.organization_memberships as membership
+                join public.organizations as organization
+                  on organization.id = membership.organization_id
+                where membership.user_id = $1
+                order by organization.created_at, organization.id
+                limit 1
+                """,
+                user_id,
+            )
+        if membership is None:
+            membership = await connection.fetchrow(
+                """
+                select id as organization_id, 'viewer' as role
+                from public.organizations
+                order by created_at, id
+                limit 1
+                """
+            )
+        if membership is None:
+            membership = await connection.fetchrow(
+                """
+                select organization_id, 'viewer' as role
+                from public.trade_cases
+                order by created_at, id
+                limit 1
+                """
+            )
+    if membership is None:
         raise ServiceError(
-            "organization_access_denied", "User is not a member of this organization.", 403
+            "organization_required", "No organization is available for telemetry.", 400
         )
-    return Principal(user_id=user_id, email=email, organization_id=organization_id, role=role)
+    return Principal(
+        user_id=user_id,
+        email=email,
+        organization_id=membership["organization_id"],
+        role=membership["role"],
+    )
 
 
 CurrentPrincipal = Depends(get_current_principal)

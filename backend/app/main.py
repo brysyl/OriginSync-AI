@@ -352,11 +352,18 @@ async def list_trades(
     principal: Principal = Depends(get_current_principal),
 ) -> TradePage:
     repository = TradeRepository(request.app.state.database)
-    rows = await repository.list_cases(
-        principal.organization_id,
-        _decode_cursor(cursor),
-        limit,
-    )
+    try:
+        rows = await repository.list_cases(
+            principal.organization_id,
+            _decode_cursor(cursor),
+            limit,
+        )
+    except Exception:
+        logger.exception(
+            "Trade telemetry request failed for organization %s",
+            principal.organization_id,
+        )
+        raise
     has_more = len(rows) > limit
     page_rows = rows[:limit]
     items = [TradeResult.model_validate(dict(row)) for row in page_rows]

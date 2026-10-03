@@ -1,11 +1,14 @@
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
+import app.auth as auth_module
 from app.auth import Principal, get_current_principal
 from app.main import app
 from app.models import TradeResult
@@ -56,6 +59,58 @@ class StubPool:
     @asynccontextmanager
     async def acquire(self):
         yield self.connection
+
+
+@pytest.mark.asyncio
+async def test_principal_falls_back_to_first_organization_for_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = UUID("35dd6995-6aeb-4f02-a4f8-82531e5a793b")
+
+    class AuthConnection:
+        async def fetchrow(self, query: str, *args: object) -> dict[str, object] | None:
+            if "organization_memberships" in query:
+                return None
+            assert "from public.organizations" in query
+            return {"organization_id": ORGANIZATION_ID, "role": "viewer"}
+
+    class AuthPool(StubPool):
+        pass
+
+    class AuthClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def get(self, *args: object, **kwargs: object) -> object:
+            return SimpleNamespace(status_code=200, json=lambda: {"id": str(user_id)})
+
+    monkeypatch.setattr(auth_module.httpx, "AsyncClient", AuthClient)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                settings=SimpleNamespace(
+                    supabase_url="https://example.supabase.co",
+                    supabase_anon_key=SecretStr("anon-key"),
+                ),
+                database=AuthPool(StubConnection([])),
+            )
+        )
+    )
+    request.app.state.database.connection = AuthConnection()
+
+    principal = await get_current_principal(
+        request, authorization="Bearer test-token", organization_id=None
+    )
+
+    assert principal.user_id == user_id
+    assert principal.organization_id == ORGANIZATION_ID
+    assert principal.role == "viewer"
 
 
 @pytest.mark.asyncio
@@ -110,3 +165,36 @@ async def test_list_trades_returns_seeded_case_as_http_200(
     assert response.json()["items"][0]["external_reference"] == "TR-2026-001"
     assert response.json()["items"][0]["cif_amount"] == "1250.00"
     assert response.json()["items"][0]["preferential_margin"] == "0.15"
+
+
+@pytest.mark.asyncio
+async def test_list_trades_returns_empty_zero_state_as_http_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    principal = Principal(
+        user_id=UUID("35dd6995-6aeb-4f02-a4f8-82531e5a793b"),
+        email="trader@example.com",
+        organization_id=ORGANIZATION_ID,
+        role="viewer",
+    )
+
+    async def list_cases(
+        self: TradeRepository,
+        organization_id: UUID,
+        before: tuple[datetime, UUID] | None,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        assert organization_id == ORGANIZATION_ID
+        assert before is None
+        assert limit == 100
+        return []
+
+    monkeypatch.setitem(app.dependency_overrides, get_current_principal, lambda: principal)
+    monkeypatch.setattr(TradeRepository, "list_cases", list_cases)
+    monkeypatch.setattr(app.state, "database", object(), raising=False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/trades?limit=100")
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "next_cursor": None}
