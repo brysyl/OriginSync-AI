@@ -5,15 +5,17 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 
 from app.agent import OrderAgent
 from app.auth import Principal, get_current_principal
@@ -29,6 +31,7 @@ from app.services.vertex import VertexService
 from app.services.webhooks import require_webhook_hmac
 
 logger = logging.getLogger(__name__)
+frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "out"
 
 
 @asynccontextmanager
@@ -186,9 +189,35 @@ def custom_openapi() -> dict[str, object]:
 app.openapi = custom_openapi
 
 
-@app.get("/", include_in_schema=False)
-async def root() -> RedirectResponse:
+@app.get("/", include_in_schema=False, response_model=None)
+async def root() -> FileResponse | RedirectResponse:
+    index_file = frontend_dist / "index.html"
+    if index_file.is_file():
+        return FileResponse(index_file)
     return RedirectResponse(url="/docs")
+
+
+@app.get("/config.js", include_in_schema=False)
+async def frontend_config(request: Request) -> Response:
+    settings: Settings = request.app.state.settings
+    config = json.dumps(
+        {
+            "supabaseUrl": settings.supabase_url,
+            "supabaseAnonKey": (
+                settings.supabase_anon_key.get_secret_value()
+                if settings.supabase_anon_key is not None
+                else None
+            ),
+        }
+    )
+    return Response(
+        (
+            f"window.__ORIGINSYNC_CONFIG__ = {config};"
+            'window.dispatchEvent(new Event("originsync-config-ready"));'
+        ),
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -454,3 +483,38 @@ async def n8n_webhook(request: Request) -> dict[str, bool]:
     await agent.process(trigger.trade, trigger.organization_id, None, trigger.event_id)
     await repository.finish_webhook("n8n", trigger.event_id)
     return {"received": True, "duplicate": False}
+
+
+if frontend_dist.is_dir():
+    next_static_dir = frontend_dist / "_next" / "static"
+    if next_static_dir.is_dir():
+        app.mount(
+            "/_next/static",
+            StaticFiles(directory=next_static_dir),
+            name="frontend-static",
+        )
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_frontend(full_path: str) -> FileResponse:
+    if (
+        full_path == "api"
+        or full_path.startswith("api/")
+        or full_path in {"docs", "redoc", "openapi.json"}
+        or full_path.startswith(("docs/", "redoc/"))
+    ):
+        raise StarletteHTTPException(status_code=404, detail="Not Found")
+
+    frontend_root = frontend_dist.resolve()
+    target_file = (frontend_root / full_path).resolve()
+    try:
+        target_file.relative_to(frontend_root)
+    except ValueError:
+        raise StarletteHTTPException(status_code=404, detail="Not Found") from None
+    if target_file.is_file():
+        return FileResponse(target_file)
+
+    index_file = frontend_root / "index.html"
+    if index_file.is_file():
+        return FileResponse(index_file)
+    raise StarletteHTTPException(status_code=404, detail="Frontend build not found.")

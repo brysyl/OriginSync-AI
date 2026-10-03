@@ -2,11 +2,11 @@
 
 import { AgGridReact } from "ag-grid-react";
 import { colorSchemeDark, themeQuartz, type ColDef } from "ag-grid-community";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { FormEvent } from "react";
 import type { Session } from "@supabase/supabase-js";
 
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, subscribeToSupabaseConfig } from "@/lib/supabase";
 import type { TradePage, TradeRecord } from "@/lib/types";
 
 const CACHE_KEY = "originsync.telemetry.v1";
@@ -40,6 +40,7 @@ const gridTheme = themeQuartz.withPart(colorSchemeDark).withParams({
 function apiBaseUrl(): string | null {
   const configured = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
   if (!configured) return null;
+  if (configured === "same-origin") return "";
   return /^https?:\/\//i.test(configured) ? configured.replace(/\/+$/, "") : `https://${configured}`;
 }
 
@@ -125,7 +126,11 @@ export function ControlRoom() {
   const [online, setOnline] = useState(navigator.onLine);
   const [loading, setLoading] = useState(initialCache.rows.length === 0);
   const gridRef = useRef<AgGridReact<TradeRecord>>(null);
-  const supabase = useMemo(() => getSupabaseClient(), []);
+  const supabase = useSyncExternalStore(
+    subscribeToSupabaseConfig,
+    getSupabaseClient,
+    () => null,
+  );
   const apiUrl = useMemo(() => apiBaseUrl(), []);
 
   useEffect(() => {
@@ -154,7 +159,7 @@ export function ControlRoom() {
   }, []);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
-    if (!supabase || !session || !organizationId || !apiUrl) return;
+    if (!supabase || !session || !organizationId || apiUrl === null) return;
     try {
       const { data, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) throw sessionError;
@@ -196,7 +201,7 @@ export function ControlRoom() {
   }, [apiUrl, organizationId, session, supabase]);
 
   useEffect(() => {
-    if (!session || !organizationId || !apiUrl) return;
+    if (!session || !organizationId || apiUrl === null) return;
     const controller = new AbortController();
     const initialLoad = window.setTimeout(() => void refresh(controller.signal), 0);
     const timer = window.setInterval(() => void refresh(), REFRESH_MS);
@@ -350,7 +355,7 @@ export function ControlRoom() {
         </div>
       </section>
 
-      {!supabase || !apiUrl ? (
+      {!supabase || apiUrl === null ? (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-5 text-sm text-amber-100">
           Configure NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and
           NEXT_PUBLIC_API_BASE_URL to connect this control room.
