@@ -19,7 +19,7 @@ from app.services.vertex import VertexService
 logger = logging.getLogger(__name__)
 
 
-class OderAgent:
+class OrderAgent:
     def __init__(
         self,
         settings: Settings,

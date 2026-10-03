@@ -443,14 +443,15 @@ class TradeRepository:
         self,
         provider: str,
         event_id: str,
+        payload: dict[str, object],
         payload_hash: str,
     ) -> bool:
         async with self.pool.acquire() as connection:
             inserted = await connection.fetchval(
                 """
                 insert into public.webhook_events
-                    (provider, event_id, signature_verified, payload_sha256)
-                values ($1,$2,true,$3)
+                    (provider, event_id, payload, signature_verified, payload_sha256)
+                values ($1,$2,$3::jsonb,true,$4)
                 on conflict (provider, event_id) do update
                     set signature_verified = true
                     where webhook_events.processed_at is null
@@ -459,6 +460,7 @@ class TradeRepository:
                 """,
                 provider,
                 event_id,
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
                 payload_hash,
             )
             if inserted is None:

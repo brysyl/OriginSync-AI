@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.agent import OderAgent
+from app.agent import OrderAgent
 from app.auth import Principal, get_current_principal
 from app.core.errors import ServiceError, service_error_handler
 from app.core.middleware import PayloadSizeLimitMiddleware
@@ -41,7 +41,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         vertex = VertexService(settings, database)
         application.state.settings = settings
         application.state.database = database
-        application.state.agent = OderAgent(
+        application.state.agent = OrderAgent(
             settings=settings,
             database=database,
             vertex=vertex,
@@ -301,7 +301,7 @@ async def create_trade(
             "Only organization owners and admins can initiate an eligible settlement.",
             403,
         )
-    agent: OderAgent = request.app.state.agent
+    agent: OrderAgent = request.app.state.agent
     return await agent.process(
         trade,
         principal.organization_id,
@@ -383,7 +383,7 @@ async def paypal_webhook(request: Request) -> dict[str, bool]:
         raise ServiceError("invalid_webhook_event_id", "PayPal event id is required.", 422)
     repository = TradeRepository(request.app.state.database)
     try:
-        created = await repository.record_webhook("paypal", event_id, payload_hash)
+        created = await repository.record_webhook("paypal", event_id, payload, payload_hash)
     except ValueError as error:
         raise ServiceError("webhook_event_conflict", str(error), 409) from error
     if not created:
@@ -445,12 +445,12 @@ async def n8n_webhook(request: Request) -> dict[str, bool]:
         ) from error
     repository = TradeRepository(request.app.state.database)
     try:
-        created = await repository.record_webhook("n8n", trigger.event_id, payload_hash)
+        created = await repository.record_webhook("n8n", trigger.event_id, payload, payload_hash)
     except ValueError as error:
         raise ServiceError("webhook_event_conflict", str(error), 409) from error
     if not created:
         return {"received": True, "duplicate": True}
-    agent: OderAgent = request.app.state.agent
+    agent: OrderAgent = request.app.state.agent
     await agent.process(trigger.trade, trigger.organization_id, None, trigger.event_id)
     await repository.finish_webhook("n8n", trigger.event_id)
     return {"received": True, "duplicate": False}
