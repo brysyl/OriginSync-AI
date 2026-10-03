@@ -4,9 +4,11 @@ services:
     env: docker
     plan: free
     dockerfilePath: backend/Dockerfile
+    dockerContext: backend
 
   - type: web
     name: originsync-dashboard
     env: docker
     plan: free
     dockerfilePath: frontend/Dockerfile
+    dockerContext: frontend
