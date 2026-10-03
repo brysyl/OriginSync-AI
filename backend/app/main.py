@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Header, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -184,6 +184,11 @@ def custom_openapi() -> dict[str, object]:
 
 
 app.openapi = custom_openapi
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
 
 
 @app.exception_handler(RequestValidationError)
