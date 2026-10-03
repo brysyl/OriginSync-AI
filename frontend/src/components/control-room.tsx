@@ -44,9 +44,12 @@ function apiBaseUrl(): string | null {
   return /^https?:\/\//i.test(configured) ? configured.replace(/\/+$/, "") : `https://${configured}`;
 }
 
-function currency(value: number | string, code: string): string {
+function currency(value: number | string, code: string | null): string {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return "—";
+  if (!code) {
+    return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(amount);
+  }
   return new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: code,
@@ -94,8 +97,12 @@ function isTradeRecord(value: unknown): value is TradeRecord {
     typeof value.origin_country === "string" &&
     typeof value.destination_country === "string" &&
     (typeof value.cif_amount === "string" || typeof value.cif_amount === "number") &&
-    typeof value.currency === "string" &&
+    (value.currency === null || typeof value.currency === "string") &&
     (value.origin_eligible === null || typeof value.origin_eligible === "boolean") &&
+    (value.preferential_margin === undefined ||
+      value.preferential_margin === null ||
+      typeof value.preferential_margin === "number" ||
+      typeof value.preferential_margin === "string") &&
     isRecord(value.origin_decision) &&
     (value.rigs_score === null || typeof value.rigs_score === "number") &&
     isRecord(value.rigs_components) &&
@@ -175,6 +182,7 @@ export function ControlRoom() {
       });
       const result = (await response.json()) as TradePage | { error?: { message?: string } };
       if (!response.ok) {
+        console.error("Trade telemetry API error:", { status: response.status, body: result });
         throw new Error(
           "error" in result ? result.error?.message ?? `API returned ${response.status}` : `API returned ${response.status}`,
         );
@@ -195,6 +203,7 @@ export function ControlRoom() {
       window.localStorage.setItem(CACHE_KEY, JSON.stringify({ rows: result.items, cachedAt: timestamp }));
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
+      console.warn("Trade telemetry refresh failed:", caught);
       setError(caught instanceof Error ? caught.message : "Telemetry refresh failed.");
       setLoading(false);
     }

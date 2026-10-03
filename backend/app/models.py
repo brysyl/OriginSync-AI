@@ -109,7 +109,7 @@ class TradeResult(BaseModel):
     origin_country: str
     destination_country: str
     cif_amount: Decimal
-    currency: str
+    currency: str | None
     origin_eligible: bool | None
     origin_decision: dict[str, object]
     rigs_score: float | None
@@ -117,6 +117,7 @@ class TradeResult(BaseModel):
     settlement_status: SettlementStatus
     paypal_payout_batch_id: str | None
     error_code: str | None
+    preferential_margin: Decimal | None = None
     created_at: datetime
     updated_at: datetime
 

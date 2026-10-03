@@ -326,25 +326,60 @@ class TradeRepository:
         limit: int,
     ) -> list[Record]:
         async with self.pool.acquire() as connection:
-            if before is None:
-                return await connection.fetch(
-                    """
-                    select * from public.trade_cases
-                    where organization_id = $1
-                    order by created_at desc, id desc limit $2
-                    """,
-                    organization_id,
-                    limit + 1,
-                )
             return await connection.fetch(
                 """
-                select * from public.trade_cases
-                where organization_id = $1 and (created_at, id) < ($2, $3)
-                order by created_at desc, id desc limit $4
+                with source as (
+                    select to_jsonb(trade_case) as data
+                    from public.trade_cases as trade_case
+                    where trade_case.organization_id = $1
+                ),
+                normalized as (
+                    select
+                        (data->>'id')::uuid as id,
+                        coalesce(data->>'external_reference', data->>'reference_number')
+                            as external_reference,
+                        coalesce(data->>'status', 'received') as status,
+                        data->>'goods_description' as goods_description,
+                        data->>'hs_code' as hs_code,
+                        nullif(data->>'hs_code_confidence', '')::numeric as hs_code_confidence,
+                        data->>'origin_country' as origin_country,
+                        data->>'destination_country' as destination_country,
+                        coalesce(
+                            nullif(data->>'cif_amount', ''),
+                            nullif(data->>'cif_value', ''),
+                            '0'
+                        )::numeric as cif_amount,
+                        nullif(data->>'currency', '') as currency,
+                        nullif(data->>'origin_eligible', '')::boolean as origin_eligible,
+                        coalesce(data->'origin_decision', '{}'::jsonb) as origin_decision,
+                        nullif(data->>'rigs_score', '')::numeric as rigs_score,
+                        coalesce(data->'rigs_components', '{}'::jsonb) as rigs_components,
+                        coalesce(data->>'settlement_status', 'not_eligible')
+                            as settlement_status,
+                        data->>'paypal_payout_batch_id' as paypal_payout_batch_id,
+                        data->>'error_code' as error_code,
+                        nullif(data->>'preferential_margin', '')::numeric as preferential_margin,
+                        coalesce(
+                            nullif(data->>'created_at', '')::timestamptz,
+                            nullif(data->>'updated_at', '')::timestamptz,
+                            to_timestamp(0)
+                        ) as created_at,
+                        coalesce(
+                            nullif(data->>'updated_at', '')::timestamptz,
+                            nullif(data->>'created_at', '')::timestamptz,
+                            to_timestamp(0)
+                        ) as updated_at
+                    from source
+                )
+                select *
+                from normalized
+                where $2::timestamptz is null or (created_at, id) < ($2, $3)
+                order by created_at desc, id desc
+                limit $4
                 """,
                 organization_id,
-                before[0],
-                before[1],
+                before[0] if before else None,
+                before[1] if before else None,
                 limit + 1,
             )
 

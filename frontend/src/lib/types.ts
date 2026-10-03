@@ -25,7 +25,7 @@ export interface TradeRecord {
   origin_country: string;
   destination_country: string;
   cif_amount: string | number;
-  currency: string;
+  currency: string | null;
   origin_eligible: boolean | null;
   origin_decision: Record<string, unknown>;
   rigs_score: number | null;
@@ -33,6 +33,7 @@ export interface TradeRecord {
   settlement_status: SettlementStatus;
   paypal_payout_batch_id: string | null;
   error_code: string | null;
+  preferential_margin?: number | string | null;
   created_at: string;
   updated_at: string;
 }
