@@ -188,6 +188,8 @@ cd backend && pytest
 # Run linter and formatting checks
 ruff check app/
 
+```
+---
 📜 License
 Distributed under the MIT License. See LICENSE for more information.
 
