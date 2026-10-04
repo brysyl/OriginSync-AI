@@ -162,6 +162,81 @@ async def test_list_cases_normalizes_seeded_trade_case_columns() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_telemetry_cases_queries_unscoped_and_returns_mock_when_empty() -> None:
+    connection = StubConnection([])
+    repository = TradeRepository(StubPool(connection))  # type: ignore[arg-type]
+
+    cases = await repository.list_telemetry_cases()
+
+    assert connection.query == "SELECT * FROM trade_cases ORDER BY created_at DESC LIMIT 50"
+    assert connection.args == ()
+    assert len(cases) == 3
+    assert set(cases[0]) == {
+        "trade_reference",
+        "goods",
+        "route",
+        "hs_code",
+        "cif_value",
+        "duty_exemption",
+        "rigs_score",
+        "settlement",
+        "status",
+    }
+
+
+@pytest.mark.asyncio
+async def test_telemetry_endpoint_calculates_metrics_from_database_cases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    principal = Principal(
+        user_id=UUID("35dd6995-6aeb-4f02-a4f8-82531e5a793b"),
+        email="trader@example.com",
+        organization_id=ORGANIZATION_ID,
+        role="admin",
+    )
+    cases = [
+        {
+            "trade_reference": "TR-1",
+            "goods": "Coffee",
+            "route": "KE → GH",
+            "hs_code": "090111",
+            "cif_value": Decimal("100"),
+            "duty_exemption": True,
+            "rigs_score": Decimal("0.8"),
+            "settlement": "pending",
+            "status": "verified",
+        },
+        {
+            "trade_reference": "TR-2",
+            "goods": "Cocoa",
+            "route": "GH → US",
+            "hs_code": "180100",
+            "cif_value": Decimal("200"),
+            "duty_exemption": False,
+            "rigs_score": Decimal("0.6"),
+            "settlement": "completed",
+            "status": "settled",
+        },
+    ]
+
+    async def list_telemetry_cases(self: TradeRepository) -> list[dict[str, object]]:
+        return cases
+
+    monkeypatch.setitem(app.dependency_overrides, get_telemetry_principal, lambda: principal)
+    monkeypatch.setattr(TradeRepository, "list_telemetry_cases", list_telemetry_cases)
+    monkeypatch.setattr(app.state, "database", object(), raising=False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/telemetry")
+
+    assert response.status_code == 200
+    assert response.json()["trade_cases_count"] == 2
+    assert response.json()["active_settlements"] == 1
+    assert response.json()["avg_rigs"] == pytest.approx(0.7)
+    assert response.json()["cases"][0]["trade_reference"] == "TR-1"
+
+
+@pytest.mark.asyncio
 async def test_list_trades_returns_seeded_case_as_http_200(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

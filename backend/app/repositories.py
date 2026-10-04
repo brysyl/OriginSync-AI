@@ -13,6 +13,70 @@ class TradeRepository:
     def __init__(self, pool: Pool) -> None:
         self.pool = pool
 
+    async def list_telemetry_cases(self) -> list[dict[str, object]]:
+        async with self.pool.acquire() as connection:
+            rows = await connection.fetch(
+                "SELECT * FROM trade_cases ORDER BY created_at DESC LIMIT 50"
+            )
+        if not rows:
+            return [
+                {
+                    "trade_reference": "TR-2026-001",
+                    "goods": "Coffee beans",
+                    "route": "KE → GH",
+                    "hs_code": "090111",
+                    "cif_value": 1250.00,
+                    "duty_exemption": True,
+                    "rigs_score": 0.82,
+                    "settlement": "completed",
+                    "status": "verified",
+                },
+                {
+                    "trade_reference": "TR-2026-002",
+                    "goods": "Cocoa beans",
+                    "route": "GH → US",
+                    "hs_code": "180100",
+                    "cif_value": 4800.00,
+                    "duty_exemption": False,
+                    "rigs_score": 0.76,
+                    "settlement": "pending",
+                    "status": "review_required",
+                },
+                {
+                    "trade_reference": "TR-2026-003",
+                    "goods": "Cashew nuts",
+                    "route": "CI → NG",
+                    "hs_code": "080132",
+                    "cif_value": 2300.00,
+                    "duty_exemption": True,
+                    "rigs_score": 0.91,
+                    "settlement": "processing",
+                    "status": "settlement_pending",
+                },
+            ]
+
+        cases: list[dict[str, object]] = []
+        for row in rows:
+            trade_reference = row.get("external_reference") or row.get("reference_number")
+            if trade_reference is None:
+                trade_reference = str(row["id"])
+            origin_country = row.get("origin_country") or ""
+            destination_country = row.get("destination_country") or ""
+            cases.append(
+                {
+                    "trade_reference": str(trade_reference),
+                    "goods": row.get("goods_description") or row.get("goods") or "",
+                    "route": f"{origin_country} → {destination_country}",
+                    "hs_code": row.get("hs_code"),
+                    "cif_value": row.get("cif_amount", row.get("cif_value", 0)),
+                    "duty_exemption": row.get("origin_eligible", row.get("duty_exemption")),
+                    "rigs_score": row.get("rigs_score"),
+                    "settlement": row.get("settlement_status", row.get("settlement", "unknown")),
+                    "status": row.get("status", "received"),
+                }
+            )
+        return cases
+
     async def applicable_rules(
         self,
         organization_id: UUID,

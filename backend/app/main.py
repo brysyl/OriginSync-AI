@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
@@ -23,7 +24,13 @@ from app.core.errors import ServiceError, service_error_handler
 from app.core.middleware import PayloadSizeLimitMiddleware, TelemetryCorsHeadersMiddleware
 from app.core.settings import Settings, get_settings
 from app.db import create_pool
-from app.models import N8nTradeTrigger, TradeCreate, TradePage, TradeResult
+from app.models import (
+    N8nTradeTrigger,
+    TradeCreate,
+    TradePage,
+    TradeResult,
+    TradeTelemetry,
+)
 from app.repositories import TradeRepository
 from app.services.paypal import PayPalService
 from app.services.storage import SupabaseStorage
@@ -407,6 +414,34 @@ async def list_trades(
             principal.organization_id,
         )
         return TradePage(items=[], next_cursor=None)
+
+
+@app.get(
+    "/api/v1/telemetry",
+    response_model=TradeTelemetry,
+    tags=["trades"],
+    operation_id="getTradeTelemetry",
+)
+async def get_trade_telemetry(
+    request: Request,
+    principal: Principal = Depends(get_telemetry_principal),
+) -> TradeTelemetry:
+    repository = TradeRepository(request.app.state.database)
+    cases = await repository.list_telemetry_cases()
+    rigs_scores = [
+        float(case["rigs_score"])
+        for case in cases
+        if isinstance(case.get("rigs_score"), (int, float, Decimal))
+        and not isinstance(case.get("rigs_score"), bool)
+    ]
+    return TradeTelemetry(
+        cases=cases,
+        trade_cases_count=len(cases),
+        active_settlements=sum(
+            case.get("settlement") in {"pending", "processing"} for case in cases
+        ),
+        avg_rigs=sum(rigs_scores) / len(rigs_scores) if rigs_scores else 0.0,
+    )
 
 
 async def _webhook_payload(request: Request, provider: str) -> tuple[dict[str, object], str]:

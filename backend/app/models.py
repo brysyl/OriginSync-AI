@@ -127,6 +127,25 @@ class TradePage(BaseModel):
     next_cursor: str | None
 
 
+class TelemetryCase(BaseModel):
+    trade_reference: str
+    goods: str
+    route: str
+    hs_code: str | None
+    cif_value: Decimal
+    duty_exemption: bool | None
+    rigs_score: float | None
+    settlement: str
+    status: str
+
+
+class TradeTelemetry(BaseModel):
+    cases: list[TelemetryCase]
+    trade_cases_count: int
+    active_settlements: int
+    avg_rigs: float
+
+
 class TariffRule(BaseModel):
     id: UUID
     organization_id: UUID | None = None
