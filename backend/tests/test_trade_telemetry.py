@@ -225,6 +225,38 @@ async def test_telemetry_endpoint_returns_static_payload_without_external_state(
 
 
 @pytest.mark.asyncio
+async def test_static_telemetry_is_available_on_all_route_aliases() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        responses = [
+            await client.get(path)
+            for path in ("/telemetry", "/api/telemetry", "/api/v1/telemetry")
+        ]
+
+    assert all(response.status_code == 200 for response in responses)
+    assert responses[0].json() == responses[1].json() == responses[2].json()
+
+
+@pytest.mark.asyncio
+async def test_telemetry_cors_allows_any_origin_method_and_header() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.options(
+            "/telemetry",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "x-custom-header",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert "GET" in response.headers["access-control-allow-methods"]
+    assert "x-custom-header" in response.headers["access-control-allow-headers"]
+
+
+@pytest.mark.asyncio
 async def test_list_trades_returns_seeded_case_as_http_200(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -45,23 +45,14 @@ TELEMETRY_ORGANIZATION_ID = UUID("afd7ea02-8e5d-468d-a551-8d0aa2855102")
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    from supabase import create_client
-
     settings = get_settings()
     settings.validate_runtime_configuration()
     database = await create_pool(settings.database_url)
-    assert settings.supabase_url is not None
-    assert settings.supabase_service_role_key is not None
-    supabase = create_client(
-        settings.supabase_url,
-        settings.supabase_service_role_key.get_secret_value(),
-    )
     vertex: VertexService | None = None
     try:
         vertex = VertexService(settings, database)
         application.state.settings = settings
         application.state.database = database
-        application.state.supabase = supabase
         application.state.agent = OrderAgent(
             settings=settings,
             database=database,
@@ -106,17 +97,10 @@ app.add_middleware(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_settings().allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Idempotency-Key",
-        "X-Organization-ID",
-        "X-OriginSync-Signature",
-        "X-OriginSync-Timestamp",
-    ],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 app.add_middleware(TelemetryCorsHeadersMiddleware)
 app.add_exception_handler(ServiceError, service_error_handler)
@@ -655,7 +639,16 @@ TELEMETRY_TRADE_CASES = [
     "/api/v1/telemetry",
     response_model=TradeTelemetry,
     tags=["trades"],
-    operation_id="getTradeTelemetry",
+)
+@app.get(
+    "/api/telemetry",
+    response_model=TradeTelemetry,
+    tags=["trades"],
+)
+@app.get(
+    "/telemetry",
+    response_model=TradeTelemetry,
+    tags=["trades"],
 )
 async def get_trade_telemetry() -> TradeTelemetry:
     return TradeTelemetry(

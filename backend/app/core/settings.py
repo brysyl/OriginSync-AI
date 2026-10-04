@@ -56,9 +56,6 @@ class Settings(BaseSettings):
             name
             for name, value in (
                 ("DATABASE_URL", self.database_url),
-                ("SUPABASE_URL", self.supabase_url),
-                ("SUPABASE_ANON_KEY", self.supabase_anon_key),
-                ("SUPABASE_SERVICE_ROLE_KEY", self.supabase_service_role_key),
                 ("VERTEX_PROJECT_ID", self.vertex_project_id),
                 ("PAYPAL_WEBHOOK_HMAC_SECRET", self.paypal_webhook_hmac_secret),
                 ("N8N_WEBHOOK_HMAC_SECRET", self.n8n_webhook_hmac_secret),
