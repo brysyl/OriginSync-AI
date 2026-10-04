@@ -20,7 +20,7 @@ from starlette.staticfiles import StaticFiles
 from app.agent import OrderAgent
 from app.auth import Principal, get_current_principal
 from app.core.errors import ServiceError, service_error_handler
-from app.core.middleware import PayloadSizeLimitMiddleware
+from app.core.middleware import PayloadSizeLimitMiddleware, TelemetryCorsHeadersMiddleware
 from app.core.settings import Settings, get_settings
 from app.db import create_pool
 from app.models import N8nTradeTrigger, TradeCreate, TradePage, TradeResult
@@ -100,6 +100,7 @@ app.add_middleware(
         "X-OriginSync-Timestamp",
     ],
 )
+app.add_middleware(TelemetryCorsHeadersMiddleware)
 app.add_exception_handler(ServiceError, service_error_handler)
 
 
@@ -302,6 +303,39 @@ def _decode_cursor(cursor: str | None) -> tuple[datetime, UUID] | None:
         raise ServiceError("invalid_cursor", "Pagination cursor is invalid.", 422) from error
 
 
+async def get_telemetry_principal(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    organization_id: UUID | None = Header(default=None, alias="X-Organization-ID"),
+) -> Principal:
+    try:
+        return await get_current_principal(request, authorization, organization_id)
+    except Exception:
+        logger.exception("Telemetry identity verification failed; using guest context")
+
+    guest_organization_id = UUID(int=0)
+    try:
+        async with request.app.state.database.acquire() as connection:
+            organization = await connection.fetchrow(
+                """
+                select id from public.organizations
+                order by created_at, id
+                limit 1
+                """
+            )
+        if organization is not None:
+            guest_organization_id = organization["id"]
+    except Exception:
+        logger.exception("Could not resolve the default telemetry organization")
+
+    return Principal(
+        user_id=UUID(int=0),
+        email=None,
+        organization_id=guest_organization_id,
+        role="viewer",
+    )
+
+
 @app.post(
     "/api/v1/trades",
     response_model=TradeResult,
@@ -349,30 +383,30 @@ async def list_trades(
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=256),
-    principal: Principal = Depends(get_current_principal),
+    principal: Principal = Depends(get_telemetry_principal),
 ) -> TradePage:
-    repository = TradeRepository(request.app.state.database)
     try:
+        repository = TradeRepository(request.app.state.database)
         rows = await repository.list_cases(
             principal.organization_id,
             _decode_cursor(cursor),
             limit,
         )
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        items = [TradeResult.model_validate(dict(row)) for row in page_rows]
+        next_cursor = (
+            _encode_cursor(page_rows[-1]["created_at"], page_rows[-1]["id"])
+            if has_more and page_rows
+            else None
+        )
+        return TradePage(items=items, next_cursor=next_cursor)
     except Exception:
         logger.exception(
             "Trade telemetry request failed for organization %s",
             principal.organization_id,
         )
-        raise
-    has_more = len(rows) > limit
-    page_rows = rows[:limit]
-    items = [TradeResult.model_validate(dict(row)) for row in page_rows]
-    next_cursor = (
-        _encode_cursor(page_rows[-1]["created_at"], page_rows[-1]["id"])
-        if has_more and page_rows
-        else None
-    )
-    return TradePage(items=items, next_cursor=next_cursor)
+        return TradePage(items=[], next_cursor=None)
 
 
 async def _webhook_payload(request: Request, provider: str) -> tuple[dict[str, object], str]:

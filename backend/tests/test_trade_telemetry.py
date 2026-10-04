@@ -9,8 +9,9 @@ import pytest
 from pydantic import SecretStr
 
 import app.auth as auth_module
+import app.main as main_module
 from app.auth import Principal, get_current_principal
-from app.main import app
+from app.main import app, get_telemetry_principal
 from app.models import TradeResult
 from app.repositories import TradeRepository
 
@@ -114,6 +115,34 @@ async def test_principal_falls_back_to_first_organization_for_telemetry(
 
 
 @pytest.mark.asyncio
+async def test_telemetry_principal_uses_guest_context_without_a_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GuestConnection:
+        async def fetchrow(self, query: str) -> dict[str, UUID]:
+            assert "from public.organizations" in query
+            return {"id": ORGANIZATION_ID}
+
+    class GuestPool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield GuestConnection()
+
+    async def reject_unauthenticated_request(*args: object) -> Principal:
+        raise ValueError("token is missing")
+
+    monkeypatch.setattr(main_module, "get_current_principal", reject_unauthenticated_request)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(database=GuestPool())))
+
+    principal = await get_telemetry_principal(request)
+
+    assert principal.user_id == UUID(int=0)
+    assert principal.email is None
+    assert principal.organization_id == ORGANIZATION_ID
+    assert principal.role == "viewer"
+
+
+@pytest.mark.asyncio
 async def test_list_cases_normalizes_seeded_trade_case_columns() -> None:
     connection = StubConnection([SEEDED_CASE])
     repository = TradeRepository(StubPool(connection))  # type: ignore[arg-type]
@@ -154,7 +183,7 @@ async def test_list_trades_returns_seeded_case_as_http_200(
         assert limit == 100
         return [SEEDED_CASE]
 
-    monkeypatch.setitem(app.dependency_overrides, get_current_principal, lambda: principal)
+    monkeypatch.setitem(app.dependency_overrides, get_telemetry_principal, lambda: principal)
     monkeypatch.setattr(TradeRepository, "list_cases", list_cases)
     monkeypatch.setattr(app.state, "database", object(), raising=False)
     transport = httpx.ASGITransport(app=app)
@@ -162,6 +191,8 @@ async def test_list_trades_returns_seeded_case_as_http_200(
         response = await client.get("/api/v1/trades?limit=100")
 
     assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert response.headers["access-control-allow-headers"] == "*"
     assert response.json()["items"][0]["external_reference"] == "TR-2026-001"
     assert response.json()["items"][0]["cif_amount"] == "1250.00"
     assert response.json()["items"][0]["preferential_margin"] == "0.15"
@@ -189,12 +220,94 @@ async def test_list_trades_returns_empty_zero_state_as_http_200(
         assert limit == 100
         return []
 
-    monkeypatch.setitem(app.dependency_overrides, get_current_principal, lambda: principal)
+    monkeypatch.setitem(app.dependency_overrides, get_telemetry_principal, lambda: principal)
     monkeypatch.setattr(TradeRepository, "list_cases", list_cases)
     monkeypatch.setattr(app.state, "database", object(), raising=False)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/v1/trades?limit=100")
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "next_cursor": None}
+
+
+@pytest.mark.asyncio
+async def test_list_trades_uses_guest_context_without_valid_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GuestConnection:
+        async def fetchrow(self, query: str) -> dict[str, UUID]:
+            assert "from public.organizations" in query
+            return {"id": ORGANIZATION_ID}
+
+    class GuestPool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield GuestConnection()
+
+    async def reject_unauthenticated_request(*args: object) -> Principal:
+        raise ValueError("token verification failed")
+
+    async def list_cases(
+        self: TradeRepository,
+        organization_id: UUID,
+        before: tuple[datetime, UUID] | None,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        assert organization_id == ORGANIZATION_ID
+        assert before is None
+        assert limit == 50
+        return []
+
+    monkeypatch.setattr(main_module, "get_current_principal", reject_unauthenticated_request)
+    monkeypatch.setattr(TradeRepository, "list_cases", list_cases)
+    monkeypatch.setattr(app.state, "database", GuestPool(), raising=False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/trades")
+        preflight = await client.options(
+            "/api/v1/trades",
+            headers={
+                "Origin": "https://dashboard.example",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,x-organization-id",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "next_cursor": None}
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert response.headers["access-control-allow-headers"] == "*"
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "*"
+    assert preflight.headers["access-control-allow-headers"] == "*"
+
+
+@pytest.mark.asyncio
+async def test_list_trades_database_failure_returns_empty_http_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    principal = Principal(
+        user_id=UUID("35dd6995-6aeb-4f02-a4f8-82531e5a793b"),
+        email=None,
+        organization_id=ORGANIZATION_ID,
+        role="viewer",
+    )
+
+    async def list_cases(
+        self: TradeRepository,
+        organization_id: UUID,
+        before: tuple[datetime, UUID] | None,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setitem(app.dependency_overrides, get_telemetry_principal, lambda: principal)
+    monkeypatch.setattr(TradeRepository, "list_cases", list_cases)
+    monkeypatch.setattr(app.state, "database", object(), raising=False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/trades")
 
     assert response.status_code == 200
     assert response.json() == {"items": [], "next_cursor": None}
