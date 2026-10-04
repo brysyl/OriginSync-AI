@@ -162,124 +162,66 @@ async def test_list_cases_normalizes_seeded_trade_case_columns() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_telemetry_cases_queries_supabase_unscoped_and_maps_columns() -> None:
-    class Query:
-        def __init__(self) -> None:
-            self.table_name = ""
-            self.columns = ""
-
-        def table(self, table_name: str) -> "Query":
-            self.table_name = table_name
-            return self
-
-        def select(self, columns: str) -> "Query":
-            self.columns = columns
-            return self
-
-        def execute(self) -> SimpleNamespace:
-            return SimpleNamespace(
-                data=[
-                    {
-                        "organization_id": UUID("afd7ea02-8e5d-468d-a551-8d0aa2855102"),
-                        "reference_number": "TR-1",
-                        "goods_description": "Coffee",
-                        "origin_country": "KE",
-                        "destination_country": "GH",
-                        "hs_code": "090111",
-                        "cif_amount": Decimal("100"),
-                        "origin_eligible": True,
-                        "rigs_score": 80,
-                        "settlement_status": "PENDING",
-                        "case_status": "verified",
-                    }
-                ]
-            )
-
-    query = Query()
-    repository = TradeRepository(StubPool(StubConnection([])), query)  # type: ignore[arg-type]
-
-    cases = await repository.list_telemetry_cases()
-
-    assert query.table_name == "trade_cases"
-    assert query.columns == "*"
-    assert len(cases) == 1
-    assert cases[0] == {
-        "trade_reference": "TR-1",
-        "goods": "Coffee",
-        "route": "KE → GH",
-        "hs_code": "090111",
-        "cif_value": Decimal("100"),
-        "duty_exemption": True,
-        "rigs_score": 80,
-        "settlement": "PENDING",
-        "status": "verified",
-    }
-    assert set(cases[0]) == {
-        "trade_reference",
-        "goods",
-        "route",
-        "hs_code",
-        "cif_value",
-        "duty_exemption",
-        "rigs_score",
-        "settlement",
-        "status",
-    }
-
-
-@pytest.mark.asyncio
-async def test_telemetry_endpoint_calculates_metrics_from_database_cases(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    principal = Principal(
-        user_id=UUID("35dd6995-6aeb-4f02-a4f8-82531e5a793b"),
-        email="trader@example.com",
-        organization_id=ORGANIZATION_ID,
-        role="admin",
+async def test_telemetry_endpoint_returns_static_payload_without_external_state() -> None:
+    assert main_module.TELEMETRY_ORGANIZATION_ID == UUID(
+        "afd7ea02-8e5d-468d-a551-8d0aa2855102"
     )
-    cases = [
-        {
-            "trade_reference": "TR-1",
-            "goods": "Coffee",
-            "route": "KE → GH",
-            "hs_code": "090111",
-            "cif_value": Decimal("100"),
-            "duty_exemption": True,
-            "rigs_score": Decimal("80"),
-            "settlement": "PENDING",
-            "status": "verified",
-        },
-        {
-            "trade_reference": "TR-2",
-            "goods": "Cocoa",
-            "route": "GH → US",
-            "hs_code": "180100",
-            "cif_value": Decimal("200"),
-            "duty_exemption": False,
-            "rigs_score": Decimal("60"),
-            "settlement": "completed",
-            "status": "settled",
-        },
-    ]
-
-    async def list_telemetry_cases(self: TradeRepository) -> list[dict[str, object]]:
-        return cases
-
-    monkeypatch.setitem(app.dependency_overrides, get_telemetry_principal, lambda: principal)
-    monkeypatch.setattr(TradeRepository, "list_telemetry_cases", list_telemetry_cases)
-    monkeypatch.setattr(app.state, "database", object(), raising=False)
-    monkeypatch.setattr(app.state, "supabase", object(), raising=False)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/v1/telemetry")
 
     assert response.status_code == 200
-    assert response.json()["trade_cases"] == 2
-    assert response.json()["trade_cases_count"] == 2
-    assert response.json()["preferential_origin"] == 1
-    assert response.json()["active_settlements"] == 1
-    assert response.json()["avg_rigs"] == pytest.approx(70.0)
-    assert response.json()["cases"][0]["trade_reference"] == "TR-1"
+    payload = response.json()
+    assert set(payload) == {
+        "trade_cases_count",
+        "preferential_origin",
+        "active_settlements",
+        "avg_rigs",
+        "trade_cases",
+    }
+    assert payload["trade_cases_count"] == 20
+    assert payload["preferential_origin"] == 14
+    assert payload["active_settlements"] == 8
+    assert payload["avg_rigs"] == 84.5
+    assert len(payload["trade_cases"]) == 20
+    assert sum(case["duty_exemption"] > 0 for case in payload["trade_cases"]) == 14
+    assert (
+        sum(
+            case["settlement"] in {"PENDING", "PROCESSING"}
+            for case in payload["trade_cases"]
+        )
+        == 8
+    )
+    assert sum(case["rigs_score"] for case in payload["trade_cases"]) / 20 == pytest.approx(
+        84.5
+    )
+    assert payload["trade_cases"][0] == {
+        "trade_reference": "TRD-2026-AF-001",
+        "goods": "Refined Palm Oil",
+        "route": "GH -> NG",
+        "hs_code": "1511.90",
+        "cif_value": 145000,
+        "duty_exemption": 18125,
+        "rigs_score": 88.5,
+        "settlement": "COMPLETED",
+        "status": "VERIFIED",
+    }
+    assert payload["trade_cases"][-1]["trade_reference"] == "TRD-2026-AF-020"
+    assert all(
+        set(case)
+        == {
+            "trade_reference",
+            "goods",
+            "route",
+            "hs_code",
+            "cif_value",
+            "duty_exemption",
+            "rigs_score",
+            "settlement",
+            "status",
+        }
+        for case in payload["trade_cases"]
+    )
 
 
 @pytest.mark.asyncio

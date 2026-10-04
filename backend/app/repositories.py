@@ -1,4 +1,3 @@
-import asyncio
 import json
 from datetime import datetime
 from typing import Any
@@ -14,44 +13,6 @@ class TradeRepository:
     def __init__(self, pool: Pool, supabase: Any | None = None) -> None:
         self.pool = pool
         self.supabase = supabase
-
-    async def list_telemetry_cases(self) -> list[dict[str, object]]:
-        if self.supabase is None:
-            raise RuntimeError("Supabase client is required to list telemetry cases")
-        response = await asyncio.to_thread(
-            lambda: self.supabase.table("trade_cases").select("*").execute()
-        )
-        rows = response.data or []
-
-        cases: list[dict[str, object]] = []
-        for row in rows:
-            trade_reference = (
-                row.get("trade_reference")
-                or row.get("external_reference")
-                or row.get("reference_number")
-            )
-            if trade_reference is None:
-                trade_reference = str(row.get("id", ""))
-            origin_country = row.get("origin_country") or ""
-            destination_country = row.get("destination_country") or ""
-            cases.append(
-                {
-                    "trade_reference": str(trade_reference),
-                    "goods": row.get("goods") or row.get("goods_description") or "",
-                    "route": row.get("route") or f"{origin_country} → {destination_country}",
-                    "hs_code": row.get("hs_code"),
-                    "cif_value": row.get("cif_value", row.get("cif_amount", 0)),
-                    "duty_exemption": row.get(
-                        "duty_exemption", row.get("origin_eligible")
-                    ),
-                    "rigs_score": row.get("rigs_score"),
-                    "settlement": row.get(
-                        "settlement", row.get("settlement_status", "unknown")
-                    ),
-                    "status": row.get("status", row.get("case_status", "received")),
-                }
-            )
-        return cases
 
     async def applicable_rules(
         self,

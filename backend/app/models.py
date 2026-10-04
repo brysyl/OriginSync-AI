@@ -132,16 +132,15 @@ class TelemetryCase(BaseModel):
     goods: str
     route: str
     hs_code: str | None
-    cif_value: Decimal
-    duty_exemption: bool | None
+    cif_value: float
+    duty_exemption: float
     rigs_score: float | None
     settlement: str
     status: str
 
 
 class TradeTelemetry(BaseModel):
-    cases: list[TelemetryCase]
-    trade_cases: int
+    trade_cases: list[TelemetryCase]
     trade_cases_count: int
     preferential_origin: int
     active_settlements: int
