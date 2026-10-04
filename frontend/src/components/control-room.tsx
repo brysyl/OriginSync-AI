@@ -2,27 +2,10 @@
 
 import { AgGridReact } from "ag-grid-react";
 import { colorSchemeDark, themeQuartz, type ColDef } from "ag-grid-community";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { FormEvent } from "react";
-import type { Session } from "@supabase/supabase-js";
-
-import { getSupabaseClient, subscribeToSupabaseConfig } from "@/lib/supabase";
-import type { TradePage, TradeRecord } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const CACHE_KEY = "originsync.telemetry.v1";
-const ORGANIZATION_KEY = "originsync.organization.v1";
 const REFRESH_MS = 15_000;
-const TRADE_STATUSES = [
-  "received",
-  "processing",
-  "verified",
-  "review_required",
-  "rejected",
-  "settlement_pending",
-  "settled",
-  "settlement_failed",
-] as const;
-const SETTLEMENT_STATUSES = ["not_eligible", "pending", "processing", "completed", "failed"] as const;
 const gridTheme = themeQuartz.withPart(colorSchemeDark).withParams({
   accentColor: "#43d9a3",
   backgroundColor: "#101923",
@@ -36,6 +19,25 @@ const gridTheme = themeQuartz.withPart(colorSchemeDark).withParams({
   rowHoverColor: "#17242e",
   selectedRowBackgroundColor: "#15382f",
 });
+
+interface TelemetryCase {
+  trade_reference: string;
+  goods: string;
+  route: string;
+  hs_code: string | null;
+  cif_value: number;
+  duty_exemption: number;
+  rigs_score: number | null;
+  settlement: string;
+  status: string;
+}
+
+interface TelemetryMetrics {
+  trade_cases_count: number;
+  preferential_origin: number;
+  active_settlements: number;
+  avg_rigs: number;
+}
 
 function apiBaseUrl(): string | null {
   const configured = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
@@ -57,13 +59,13 @@ function currency(value: number | string, code: string | null): string {
   }).format(amount);
 }
 
-function readCachedRows(): { rows: TradeRecord[]; cachedAt: string | null } {
+function readCachedRows(): { rows: TelemetryCase[]; cachedAt: string | null } {
   try {
     const raw = window.localStorage.getItem(CACHE_KEY);
     if (!raw) return { rows: [], cachedAt: null };
     const value: unknown = JSON.parse(raw);
     if (isRecord(value) && Array.isArray(value.rows) && typeof value.cachedAt === "string") {
-      const rows = value.rows.filter(isTradeRecord);
+      const rows = value.rows.filter(isTelemetryCase);
       if (rows.length === value.rows.length && Number.isFinite(Date.parse(value.cachedAt))) {
         return { rows, cachedAt: value.cachedAt };
       }
@@ -78,67 +80,89 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isOneOf<const Values extends readonly string[]>(
-  value: unknown,
-  values: Values,
-): value is Values[number] {
-  return typeof value === "string" && values.includes(value);
-}
-
-function isTradeRecord(value: unknown): value is TradeRecord {
+function isTelemetryCase(value: unknown): value is TelemetryCase {
   if (!isRecord(value)) return false;
   return (
-    typeof value.id === "string" &&
-    isOneOf(value.status, TRADE_STATUSES) &&
-    typeof value.goods_description === "string" &&
-    (value.external_reference === null || typeof value.external_reference === "string") &&
+    typeof value.trade_reference === "string" &&
+    typeof value.goods === "string" &&
+    typeof value.route === "string" &&
     (value.hs_code === null || typeof value.hs_code === "string") &&
-    (value.hs_code_confidence === null || typeof value.hs_code_confidence === "number") &&
-    typeof value.origin_country === "string" &&
-    typeof value.destination_country === "string" &&
-    (typeof value.cif_amount === "string" || typeof value.cif_amount === "number") &&
-    (value.currency === null || typeof value.currency === "string") &&
-    (value.origin_eligible === null || typeof value.origin_eligible === "boolean") &&
-    (value.preferential_margin === undefined ||
-      value.preferential_margin === null ||
-      typeof value.preferential_margin === "number" ||
-      typeof value.preferential_margin === "string") &&
-    isRecord(value.origin_decision) &&
-    (value.rigs_score === null || typeof value.rigs_score === "number") &&
-    isRecord(value.rigs_components) &&
-    isOneOf(value.settlement_status, SETTLEMENT_STATUSES) &&
-    (value.paypal_payout_batch_id === null || typeof value.paypal_payout_batch_id === "string") &&
-    (value.error_code === null || typeof value.error_code === "string") &&
-    typeof value.created_at === "string" &&
-    typeof value.updated_at === "string" &&
-    Number.isFinite(Date.parse(value.created_at)) &&
-    Number.isFinite(Date.parse(value.updated_at))
+    typeof value.cif_value === "number" &&
+    Number.isFinite(value.cif_value) &&
+    typeof value.duty_exemption === "number" &&
+    Number.isFinite(value.duty_exemption) &&
+    (value.rigs_score === null ||
+      (typeof value.rigs_score === "number" && Number.isFinite(value.rigs_score))) &&
+    typeof value.settlement === "string" &&
+    typeof value.status === "string"
   );
+}
+
+function metricsFromCases(cases: TelemetryCase[]): TelemetryMetrics {
+  const rigsScores = cases.flatMap((trade) =>
+    trade.rigs_score === null ? [] : [trade.rigs_score],
+  );
+  return {
+    trade_cases_count: cases.length,
+    preferential_origin: cases.filter((trade) => trade.duty_exemption > 0).length,
+    active_settlements: cases.filter((trade) =>
+      ["PENDING", "PROCESSING"].includes(trade.settlement.toUpperCase()),
+    ).length,
+    avg_rigs: rigsScores.length
+      ? rigsScores.reduce((sum, score) => sum + score, 0) / rigsScores.length
+      : 0,
+  };
+}
+
+function unwrapTelemetry(value: unknown): {
+  cases: unknown[];
+  metrics: Partial<TelemetryMetrics>;
+} {
+  const body = isRecord(value) && "data" in value ? value.data : value;
+  const metricsSource = isRecord(body) ? body : isRecord(value) ? value : {};
+  const cases = Array.isArray(body)
+    ? body
+    : isRecord(body) && Array.isArray(body.trade_cases)
+      ? body.trade_cases
+      : null;
+  if (cases === null) {
+    throw new Error("The API returned an invalid telemetry response.");
+  }
+
+  return {
+    cases,
+    metrics: {
+      trade_cases_count:
+        typeof metricsSource.trade_cases_count === "number"
+          ? metricsSource.trade_cases_count
+          : undefined,
+      preferential_origin:
+        typeof metricsSource.preferential_origin === "number"
+          ? metricsSource.preferential_origin
+          : undefined,
+      active_settlements:
+        typeof metricsSource.active_settlements === "number"
+          ? metricsSource.active_settlements
+          : undefined,
+      avg_rigs:
+        typeof metricsSource.avg_rigs === "number" ? metricsSource.avg_rigs : undefined,
+    },
+  };
 }
 
 export function ControlRoom() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [organizationId, setOrganizationId] = useState(
-    () => window.localStorage.getItem(ORGANIZATION_KEY) ?? "",
-  );
+  const apiUrl = useMemo(() => apiBaseUrl(), []);
   const [initialCache] = useState(readCachedRows);
-  const [rows, setRows] = useState<TradeRecord[]>(initialCache.rows);
+  const [rows, setRows] = useState<TelemetryCase[]>(initialCache.rows);
+  const [metrics, setMetrics] = useState<TelemetryMetrics>(() =>
+    metricsFromCases(initialCache.rows),
+  );
   const [cachedAt, setCachedAt] = useState<string | null>(initialCache.cachedAt);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
-  const [loading, setLoading] = useState(initialCache.rows.length === 0);
-  const gridRef = useRef<AgGridReact<TradeRecord>>(null);
-  const supabase = useSyncExternalStore(
-    subscribeToSupabaseConfig,
-    getSupabaseClient,
-    () => null,
-  );
-  const apiUrl = useMemo(() => apiBaseUrl(), []);
+  const [loading, setLoading] = useState(initialCache.rows.length === 0 && apiUrl !== null);
+  const gridRef = useRef<AgGridReact<TelemetryCase>>(null);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -146,13 +170,7 @@ export function ControlRoom() {
         setError("Offline shell could not be installed. Live API access is still available.");
       });
     }
-    if (!supabase) return;
-    void supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
-    });
-    return () => data.subscription.unsubscribe();
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     const handleOnline = () => setOnline(true);
@@ -166,51 +184,56 @@ export function ControlRoom() {
   }, []);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
-    if (!supabase || !session || !organizationId || apiUrl === null) return;
+    if (apiUrl === null) return;
     try {
-      const { data, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError) throw sessionError;
-      const accessToken = data.session?.access_token;
-      if (!accessToken) throw new Error("Your session has expired. Sign in again.");
-      const response = await fetch(`${apiUrl}/api/v1/trades?limit=100`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "X-Organization-ID": organizationId,
-        },
+      const response = await fetch(`${apiUrl}/api/v1/telemetry`, {
         cache: "no-store",
         signal,
       });
-      const result = (await response.json()) as TradePage | { error?: { message?: string } };
+      const result: unknown = await response.json();
       if (!response.ok) {
         console.error("Trade telemetry API error:", { status: response.status, body: result });
+        const errorBody =
+          isRecord(result) && isRecord(result.error) ? result.error.message : undefined;
         throw new Error(
-          "error" in result ? result.error?.message ?? `API returned ${response.status}` : `API returned ${response.status}`,
+          typeof errorBody === "string" ? errorBody : `API returned ${response.status}`,
         );
       }
-      if (
-        !("items" in result) ||
-        !Array.isArray(result.items) ||
-        !result.items.every(isTradeRecord)
-      ) {
+      const telemetry = unwrapTelemetry(result);
+      if (!telemetry.cases.every(isTelemetryCase)) {
         throw new Error("The API returned an invalid telemetry response.");
       }
+      const tradeCases = telemetry.cases;
+      const calculatedMetrics = metricsFromCases(tradeCases);
+      const nextMetrics: TelemetryMetrics = {
+        trade_cases_count:
+          telemetry.metrics.trade_cases_count ?? calculatedMetrics.trade_cases_count,
+        preferential_origin:
+          telemetry.metrics.preferential_origin ?? calculatedMetrics.preferential_origin,
+        active_settlements:
+          telemetry.metrics.active_settlements ?? calculatedMetrics.active_settlements,
+        avg_rigs: telemetry.metrics.avg_rigs ?? calculatedMetrics.avg_rigs,
+      };
       const timestamp = new Date().toISOString();
-      setRows(result.items);
-      setCachedAt(timestamp);
+      setRows(tradeCases);
+      setMetrics(nextMetrics);
       setLastUpdated(timestamp);
       setError(null);
       setLoading(false);
-      window.localStorage.setItem(CACHE_KEY, JSON.stringify({ rows: result.items, cachedAt: timestamp }));
+      if (tradeCases.length > 0) {
+        setCachedAt(timestamp);
+        window.localStorage.setItem(CACHE_KEY, JSON.stringify({ rows: tradeCases, cachedAt: timestamp }));
+      }
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
       console.warn("Trade telemetry refresh failed:", caught);
       setError(caught instanceof Error ? caught.message : "Telemetry refresh failed.");
       setLoading(false);
     }
-  }, [apiUrl, organizationId, session, supabase]);
+  }, [apiUrl]);
 
   useEffect(() => {
-    if (!session || !organizationId || apiUrl === null) return;
+    if (apiUrl === null) return;
     const controller = new AbortController();
     const initialLoad = window.setTimeout(() => void refresh(controller.signal), 0);
     const timer = window.setInterval(() => void refresh(), REFRESH_MS);
@@ -219,57 +242,24 @@ export function ControlRoom() {
       controller.abort();
       window.clearInterval(timer);
     };
-  }, [apiUrl, organizationId, refresh, session]);
+  }, [apiUrl, refresh]);
 
-  const signIn = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!supabase) return;
-    setBusy(true);
-    setAuthError(null);
-    const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-    setBusy(false);
-    if (signInError) {
-      setAuthError(signInError.message);
-      return;
-    }
-    setSession(data.session);
-    setPassword("");
-  };
-
-  const saveOrganization = (value: string) => {
-    setOrganizationId(value.trim());
-    if (value.trim()) window.localStorage.setItem(ORGANIZATION_KEY, value.trim());
-    else window.localStorage.removeItem(ORGANIZATION_KEY);
-  };
-
-  const signOut = async () => {
-    if (!supabase) return;
-    const { error: signOutError } = await supabase.auth.signOut();
-    if (signOutError) setAuthError(signOutError.message);
-    else setSession(null);
-  };
-
-  const columns = useMemo<ColDef<TradeRecord>[]>(
+  const columns = useMemo<ColDef<TelemetryCase>[]>(
     () => [
       {
-        field: "external_reference",
+        field: "trade_reference",
         headerName: "Trade reference",
         minWidth: 150,
         valueFormatter: ({ value }) => value || "—",
       },
       {
-        field: "goods_description",
+        field: "goods",
         headerName: "Goods",
         minWidth: 230,
         flex: 1.5,
-        tooltipField: "goods_description",
+        tooltipField: "goods",
       },
-      {
-        headerName: "Route",
-        minWidth: 100,
-        valueGetter: ({ data }) =>
-          data ? `${data.origin_country} → ${data.destination_country}` : "—",
-      },
+      { field: "route", headerName: "Route", minWidth: 120 },
       {
         field: "hs_code",
         headerName: "HS code",
@@ -277,19 +267,18 @@ export function ControlRoom() {
         valueFormatter: ({ value }) => value || "Pending",
       },
       {
-        field: "cif_amount",
+        field: "cif_value",
         headerName: "CIF value",
         minWidth: 135,
         type: "rightAligned",
-        valueFormatter: ({ data, value }) =>
-          data ? currency(value, data.currency) : "—",
+        valueFormatter: ({ value }) => currency(value, null),
       },
       {
-        field: "origin_eligible",
+        field: "duty_exemption",
         headerName: "Duty exemption",
         minWidth: 145,
-        valueFormatter: ({ value }) =>
-          value === true ? "Preferential" : value === false ? "Not verified" : "In review",
+        type: "rightAligned",
+        valueFormatter: ({ value }) => currency(value, null),
       },
       {
         field: "rigs_score",
@@ -297,31 +286,13 @@ export function ControlRoom() {
         minWidth: 115,
         type: "rightAligned",
         valueFormatter: ({ value }) =>
-          typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "—",
+          typeof value === "number" ? value.toFixed(1) : "—",
       },
-      {
-        field: "settlement_status",
-        headerName: "Settlement",
-        minWidth: 145,
-        valueFormatter: ({ value }) => String(value ?? "unknown").replaceAll("_", " "),
-      },
-      {
-        field: "status",
-        headerName: "Case status",
-        minWidth: 155,
-        valueFormatter: ({ value }) => String(value ?? "unknown").replaceAll("_", " "),
-      },
+      { field: "settlement", headerName: "Settlement", minWidth: 145 },
+      { field: "status", headerName: "Case status", minWidth: 155 },
     ],
     [],
   );
-
-  const avgRigs =
-    rows.reduce((sum, trade) => sum + (trade.rigs_score ?? 0), 0) /
-    (rows.filter((trade) => trade.rigs_score !== null).length || 1);
-  const verified = rows.filter((trade) => trade.origin_eligible === true).length;
-  const pending = rows.filter((trade) =>
-    ["pending", "processing"].includes(trade.settlement_status),
-  ).length;
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-7 px-5 py-8 sm:px-8 lg:px-12">
@@ -338,15 +309,6 @@ export function ControlRoom() {
         <div className="flex items-center gap-3 text-xs">
           <span className={`h-2 w-2 rounded-full ${online ? "bg-mint" : "bg-amber-400"}`} />
           <span className="text-slate-300">{online ? "Network online" : "Offline mode"}</span>
-          {session && (
-            <button
-              className="ml-2 rounded-lg border border-line px-3 py-2 text-slate-300 hover:border-slate-500"
-              onClick={() => void signOut()}
-              type="button"
-            >
-              Sign out
-            </button>
-          )}
         </div>
       </header>
 
@@ -364,60 +326,10 @@ export function ControlRoom() {
         </div>
       </section>
 
-      {!supabase || apiUrl === null ? (
+      {apiUrl === null ? (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-5 text-sm text-amber-100">
-          Configure NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and
-          NEXT_PUBLIC_API_BASE_URL to connect this control room.
+          Configure NEXT_PUBLIC_API_BASE_URL to connect this control room.
         </div>
-      ) : !session ? (
-        <section className="w-full max-w-md rounded-2xl border border-line bg-panel p-6">
-          <h2 className="text-lg font-semibold text-white">Sign in</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-400">
-            Use your organization account to access protected trade telemetry.
-          </p>
-          <form className="mt-5 space-y-4" onSubmit={(event) => void signIn(event)}>
-            <label className="block text-xs font-medium text-slate-300">
-              Email
-              <input
-                autoComplete="username"
-                className="mt-2 w-full rounded-lg border border-line bg-ink px-3 py-2.5 text-sm text-white outline-none focus:border-mint"
-                onChange={(event) => setEmail(event.target.value)}
-                required
-                type="email"
-                value={email}
-              />
-            </label>
-            <label className="block text-xs font-medium text-slate-300">
-              Password
-              <input
-                autoComplete="current-password"
-                className="mt-2 w-full rounded-lg border border-line bg-ink px-3 py-2.5 text-sm text-white outline-none focus:border-mint"
-                onChange={(event) => setPassword(event.target.value)}
-                required
-                type="password"
-                value={password}
-              />
-            </label>
-            <label className="block text-xs font-medium text-slate-300">
-              Organization ID
-              <input
-                className="mt-2 w-full rounded-lg border border-line bg-ink px-3 py-2.5 text-sm text-white outline-none focus:border-mint"
-                onChange={(event) => saveOrganization(event.target.value)}
-                placeholder="UUID from your administrator"
-                required
-                value={organizationId}
-              />
-            </label>
-            {authError && <p role="alert" className="text-sm text-rose-300">{authError}</p>}
-            <button
-              className="w-full rounded-lg bg-mint px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-emerald-300 disabled:opacity-50"
-              disabled={busy}
-              type="submit"
-            >
-              {busy ? "Signing in…" : "Continue"}
-            </button>
-          </form>
-        </section>
       ) : (
         <>
           {error && (
@@ -425,22 +337,11 @@ export function ControlRoom() {
               {error} {rows.length > 0 && "Showing the last saved snapshot."}
             </div>
           )}
-          {!organizationId && (
-            <label className="max-w-lg text-xs font-medium text-slate-300">
-              Organization ID
-              <input
-                className="mt-2 w-full rounded-lg border border-line bg-panel px-3 py-2.5 text-sm text-white outline-none focus:border-mint"
-                onChange={(event) => saveOrganization(event.target.value)}
-                placeholder="UUID from your administrator"
-                value={organizationId}
-              />
-            </label>
-          )}
           <section aria-label="Trade summary" className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <Metric label="Trade cases" value={rows.length.toLocaleString()} detail="Current snapshot" />
-            <Metric label="Preferential origin" value={verified.toLocaleString()} detail="Verified under active rules" />
-            <Metric label="Active settlements" value={pending.toLocaleString()} detail="Pending or processing" />
-            <Metric label="Average RIGS" value={`${(avgRigs * 100).toFixed(1)}%`} detail="Scored cases only" />
+            <Metric label="Trade cases" value={metrics.trade_cases_count.toLocaleString()} detail="Current snapshot" />
+            <Metric label="Preferential origin" value={metrics.preferential_origin.toLocaleString()} detail="Verified under active rules" />
+            <Metric label="Active settlements" value={metrics.active_settlements.toLocaleString()} detail="Pending or processing" />
+            <Metric label="Average RIGS" value={metrics.avg_rigs.toFixed(1)} detail="Scored cases only" />
           </section>
           <section className="rounded-2xl border border-line bg-panel/80 p-3 sm:p-4">
             <div className="flex flex-wrap items-center justify-between gap-3 px-1 pb-4 pt-1">
@@ -457,7 +358,7 @@ export function ControlRoom() {
               </button>
             </div>
             <div className="ag-grid-shell h-[520px] w-full">
-              <AgGridReact<TradeRecord>
+              <AgGridReact<TelemetryCase>
                 columnDefs={columns}
                 defaultColDef={{ sortable: true, resizable: true, filter: true }}
                 loading={loading}
