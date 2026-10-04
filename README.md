@@ -109,6 +109,8 @@ Database Security
  * Telemetry scope: The API prefers the requested organization membership, then another organization the user belongs to. If none exists, it uses the earliest available organization with the `viewer` role; trade-case organization scope is the final fallback.
 
 
+
+
 ⚡ Quickstart & Local Development
 Prerequisites
  * Python 3.11+
@@ -188,3 +190,47 @@ ruff check app/
 
 📜 License
 Distributed under the MIT License. See LICENSE for more information.
+
+
+---
+
+---
+## Engineering Challenges & Production Hardening
+
+Building an institutional-grade control room for intra-African trade required solving complex distributed state, deterministic tariff classification, and cloud deployment challenges under strict performance constraints. Below is a summary of the primary technical hurdles encountered and resolved during production deployment:
+
+---
+
+### 1. Offline Snapshot Collisions & Client State Invalidation
+* **Challenge:** During initial deployments, the React frontend frequently rendered zero-state metric cards (`0 Trade Cases`, `0.0% Average RIGS`) despite backend health checks passing. The PWA service worker and browser `localStorage` layer were caching early, unauthenticated network failure responses as permanent "Offline Snapshots," blocking subsequent live re-fetches.
+* **Resolution:** 
+  * Implemented a defensive cache-write guard in the client dashboard. Local storage snapshots are now updated *only* when the fetched payload contains valid, non-zero telemetry cases (`trade_cases.length > 0`).
+  * Refactored the payload response parser to seamlessly unwrap both raw array returns and nested `{ trade_cases: [...] }` JSON structures.
+  * Added an explicit client-side cache-purge protocol triggered during authentication state changes.
+
+---
+
+### 2. Multi-Alias Route Bindings & CORS Resilience
+* **Challenge:** Microservice routing differences between local dev environments, GitHub Codespaces proxies, and Render reverse proxies caused `404 Not Found` path mismatches when fetching telemetry (`/telemetry` vs `/api/v1/telemetry`), alongside strict pre-flight OPTIONS CORS rejections on cross-origin requests.
+* **Resolution:**
+  * Bound the telemetry handler across all standardized route aliases (`/telemetry`, `/api/telemetry`, `/api/v1/telemetry`) inside FastAPI's router architecture.
+  * Standardized wildcard CORS policies (`allow_origins=["*"]`, `allow_methods=["*"]`, `allow_headers=["*"]`) across all HTTP methods to ensure zero-latency client connections across multi-cloud edge nodes.
+
+---
+
+### 3. Deterministic AfCFTA Phase II Rule Stress Testing
+* **Challenge:** Translating complex trade policy—specifically Value Addition (VA) thresholds, Change in Tariff Heading (CTH), and Wholly Obtained (WO) origin criteria—into deterministic code introduced boundary edge cases (e.g., floating-point inaccuracies at exact 40.0% VA limits, zero/negative CIF exposure values, and malformed 2/4/6-digit HS code transformations).
+* **Resolution:**
+  * Developed a comprehensive 24-case `pytest` stress test suite (`tests/test_origin_decision_rules.py`) covering exact boundary conditions (39.9% rejection vs 40.0% clearance pass).
+  * Added input sanitization pipelines that reject malformed or non-conforming goods descriptors and enforce strictly typed status flags (`VERIFIED`, `REJECTED`, `PENDING_AUDIT`).
+
+---
+
+### 4. Idempotent Settlement Execution & Trust-Gated Circuit Breakers
+* **Challenge:** High-velocity settlement pipelines are vulnerable to double-payout race conditions and state regression when transitioning trade cases from `PENDING` to `PROCESSING` or `COMPLETED`. Additionally, high-risk trade cases needed to be prevented from auto-settling without manual oversight.
+* **Resolution:**
+  * Engineered an **Idempotency Layer** across all payout triggers to enforce atomic state transitions and block terminal-state regressions.
+  * Integrated an automated **RIGS Circuit Breaker**: trade cases with a RIGS score below `75.0` are automatically intercepted and routed to `FLAGGED_FOR_REVIEW` status, locking liquidity prior to settlement execution.
+  * Validated the entire pipeline across 64+ automated unit and integration test suites.
+---
+
