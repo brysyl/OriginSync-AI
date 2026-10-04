@@ -98,6 +98,7 @@ class VertexService:
                 )
         query_text = description.strip()
         query_hash = hashlib.sha256(query_text.casefold().encode()).hexdigest()
+        vector: str | None = None
         if binary is None and invoice_goods_description is None:
             async with self.database.acquire() as connection:
                 cached_exact = await connection.fetchrow(
@@ -229,6 +230,9 @@ class VertexService:
                 "Vertex AI returned invalid classification data.",
                 502,
             ) from error
+
+        if vector is None:
+            vector = self._vector_literal(await self._embedding(query_text))
 
         async with self.database.acquire() as connection:
             await connection.execute(

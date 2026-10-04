@@ -276,7 +276,7 @@ class OrderAgent:
                 organization_id,
                 trade_id,
                 "record",
-                "oder_completed",
+                "order_completed",
                 {"status": status, "settlement_status": settlement_status},
             )
         except ServiceError as error:

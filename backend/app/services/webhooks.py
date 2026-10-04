@@ -27,8 +27,10 @@ def verify_hmac_signature(
         timestamp.encode("ascii") + b"." + body,
         hashlib.sha256,
     ).hexdigest()
-    supplied = signature.removeprefix("sha256=").strip().lower()
-    return hmac.compare_digest(expected, supplied)
+    supplied = signature.strip()
+    if supplied.lower().startswith("sha256="):
+        supplied = supplied.split("=", 1)[1]
+    return hmac.compare_digest(expected, supplied.lower())
 
 
 def require_webhook_hmac(
