@@ -1,0 +1,11 @@
+.landing-shell {
+  background-image: radial-gradient(ellipse at 50% -20%, rgb(16 185 129 / 5%), transparent 42rem);
+}
+
+.landing-hero-grid {
+  background-image:
+    linear-gradient(rgb(148 163 184 / 3%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(148 163 184 / 3%) 1px, transparent 1px);
+  background-size: 52px 52px;
+  mask-image: linear-gradient(to bottom, black, transparent 88%);
+}

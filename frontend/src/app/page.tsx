@@ -1,5 +1,6 @@
-import { ControlRoomLoader } from "@/components/control-room-loader";
+import { LandingPage } from "@/components/landing-page";
+import "./landing.css";
 
 export default function HomePage() {
-  return <ControlRoomLoader />;
+  return <LandingPage />;
 }

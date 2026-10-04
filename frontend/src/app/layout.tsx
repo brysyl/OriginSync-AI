@@ -3,8 +3,9 @@ import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "OriginSync | Trade Control Room",
-  description: "Cross-border trade compliance and settlement telemetry.",
+  title: "OriginSync | Autonomous Trade Compliance & Settlement",
+  description:
+    "AfCFTA trade infrastructure for Rules of Origin, counterparty trust, and trust-gated cross-border settlement.",
   manifest: "/manifest.json",
 };
 
