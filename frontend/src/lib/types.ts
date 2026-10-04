@@ -5,6 +5,7 @@ export type TradeStatus =
   | "review_required"
   | "rejected"
   | "settlement_pending"
+  | "flagged_for_review"
   | "settled"
   | "settlement_failed";
 
@@ -12,6 +13,7 @@ export type SettlementStatus =
   | "not_eligible"
   | "pending"
   | "processing"
+  | "flagged_for_review"
   | "completed"
   | "failed";
 

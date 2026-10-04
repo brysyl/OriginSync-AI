@@ -2,7 +2,8 @@
 
 import { AgGridReact } from "ag-grid-react";
 import { colorSchemeDark, themeQuartz, type ColDef } from "ag-grid-community";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getSupabaseClient } from "@/lib/supabase";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 const CACHE_KEY = "originsync.telemetry.v1";
 const REFRESH_MS = 15_000;
@@ -37,6 +38,42 @@ interface TelemetryMetrics {
   preferential_origin: number;
   active_settlements: number;
   avg_rigs: number;
+}
+
+const CSV_COLUMNS: (keyof TelemetryCase)[] = [
+  "trade_reference",
+  "goods",
+  "route",
+  "hs_code",
+  "cif_value",
+  "duty_exemption",
+  "rigs_score",
+  "settlement",
+  "status",
+];
+
+function serializeCsvField(value: string | number | null): string {
+  const formatted = typeof value === "number" ? value.toFixed(2) : (value ?? "");
+  return `"${formatted.replaceAll('"', '""')}"`;
+}
+
+function downloadTradeTelemetry(cases: TelemetryCase[]): void {
+  const header = CSV_COLUMNS.join(",");
+  const records = cases.map((trade) =>
+    CSV_COLUMNS.map((column) => serializeCsvField(trade[column])).join(","),
+  );
+  const blob = new Blob([[header, ...records].join("\r\n") + "\r\n"], {
+    type: "text/csv;charset=utf-8;",
+  });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const timestamp = new Date().toISOString().replaceAll(":", "-");
+  link.href = objectUrl;
+  link.download = `originsync_trade_telemetry_${timestamp}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 function apiBaseUrl(): string | null {
@@ -162,8 +199,6 @@ export function ControlRoom() {
   const [error, setError] = useState<string | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
   const [loading, setLoading] = useState(initialCache.rows.length === 0 && apiUrl !== null);
-  const gridRef = useRef<AgGridReact<TelemetryCase>>(null);
-
   useEffect(() => {
     if ("serviceWorker" in navigator) {
       void navigator.serviceWorker.register("/sw.js").catch(() => {
@@ -186,8 +221,11 @@ export function ControlRoom() {
   const refresh = useCallback(async (signal?: AbortSignal) => {
     if (apiUrl === null) return;
     try {
+      const session = await getSupabaseClient()?.auth.getSession();
+      const accessToken = session?.data.session?.access_token;
       const response = await fetch(`${apiUrl}/api/v1/telemetry`, {
         cache: "no-store",
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
         signal,
       });
       const result: unknown = await response.json();
@@ -351,7 +389,7 @@ export function ControlRoom() {
               </div>
               <button
                 className="rounded-lg border border-line px-3 py-2 text-xs font-medium text-slate-200 hover:border-mint/60"
-                onClick={() => gridRef.current?.api.exportDataAsCsv({ fileName: "originsync-trades.csv" })}
+                onClick={() => downloadTradeTelemetry(rows)}
                 type="button"
               >
                 Export CSV
@@ -363,7 +401,6 @@ export function ControlRoom() {
                 defaultColDef={{ sortable: true, resizable: true, filter: true }}
                 loading={loading}
                 onGridReady={(event) => event.api.sizeColumnsToFit()}
-                ref={gridRef}
                 rowData={rows}
                 rowHeight={48}
                 suppressCellFocus

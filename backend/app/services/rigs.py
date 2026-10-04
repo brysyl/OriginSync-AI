@@ -8,6 +8,11 @@ WEIGHTS = {
     "growth": 0.15,
     "stakeholder": 0.25,
 }
+MINIMUM_SETTLEMENT_RIGS_SCORE = 0.75
+
+
+def requires_settlement_review(score: float | None) -> bool:
+    return score is not None and score < MINIMUM_SETTLEMENT_RIGS_SCORE
 
 
 @dataclass(frozen=True)

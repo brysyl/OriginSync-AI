@@ -21,6 +21,7 @@ class TradeStatus(StrEnum):
     REVIEW_REQUIRED = "review_required"
     REJECTED = "rejected"
     SETTLEMENT_PENDING = "settlement_pending"
+    FLAGGED_FOR_REVIEW = "flagged_for_review"
     SETTLED = "settled"
     SETTLEMENT_FAILED = "settlement_failed"
 
@@ -29,8 +30,15 @@ class SettlementStatus(StrEnum):
     NOT_ELIGIBLE = "not_eligible"
     PENDING = "pending"
     PROCESSING = "processing"
+    FLAGGED_FOR_REVIEW = "flagged_for_review"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class OriginDecisionStatus(StrEnum):
+    VERIFIED = "VERIFIED"
+    REJECTED = "REJECTED"
+    PENDING_AUDIT = "PENDING_AUDIT"
 
 
 class DocumentInput(BaseModel):
@@ -48,7 +56,7 @@ class TradeCreate(BaseModel):
     invoice_goods_description: GoodsDescription | None = None
     origin_country: CountryCode
     destination_country: CountryCode
-    cif_amount: Decimal = Field(ge=0, max_digits=18, decimal_places=2)
+    cif_amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     currency: CurrencyCode
     wholly_obtained: bool | None = None
     value_added_pct: Decimal | None = Field(
@@ -83,6 +91,7 @@ class N8nTradeTrigger(BaseModel):
 
 
 class OriginDecision(BaseModel):
+    status: OriginDecisionStatus
     verified: bool
     rule_id: UUID | None = None
     agreement: str | None = None

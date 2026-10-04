@@ -1,6 +1,7 @@
+import re
 from datetime import UTC, datetime
 
-from app.models import OriginDecision, TariffRule, TradeCreate
+from app.models import OriginDecision, OriginDecisionStatus, TariffRule, TradeCreate
 
 
 def decide_origin(
@@ -15,8 +16,17 @@ def decide_origin(
     documented_value_added_pct: float | None,
     documented_tariff_heading: str | None,
 ) -> OriginDecision:
+    if re.fullmatch(r"[0-9]{6,10}", hs_code) is None:
+        return OriginDecision(
+            status=OriginDecisionStatus.REJECTED,
+            verified=False,
+            reason="The classified HS code is malformed.",
+            confidence=0,
+            evaluated_at=datetime.now(UTC),
+        )
     if not has_document or evidence_confidence < 0.8:
         return OriginDecision(
+            status=OriginDecisionStatus.PENDING_AUDIT,
             verified=False,
             reason=(
                 "A supporting document with sufficiently confident extracted evidence is required."
@@ -36,6 +46,7 @@ def decide_origin(
     ]
     if not matches:
         return OriginDecision(
+            status=OriginDecisionStatus.PENDING_AUDIT,
             verified=False,
             reason="No active authoritative rule matches the HS code and trade corridor.",
             confidence=0,
@@ -124,7 +135,16 @@ def decide_origin(
         verified = False
         reason = "An evidenced input is excluded by the active rule."
 
+    pending_audit = rule.rule_type == "specific_process" and not excluded_match
+
     return OriginDecision(
+        status=(
+            OriginDecisionStatus.VERIFIED
+            if verified
+            else OriginDecisionStatus.PENDING_AUDIT
+            if pending_audit
+            else OriginDecisionStatus.REJECTED
+        ),
         verified=verified,
         rule_id=rule.id,
         agreement=rule.agreement,

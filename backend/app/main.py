@@ -650,7 +650,14 @@ TELEMETRY_TRADE_CASES = [
     response_model=TradeTelemetry,
     tags=["trades"],
 )
-async def get_trade_telemetry() -> TradeTelemetry:
+async def get_trade_telemetry(
+    request: Request,
+    principal: Principal = Depends(get_telemetry_principal),
+) -> TradeTelemetry:
+    database = getattr(request.app.state, "database", None)
+    if principal.user_id != UUID(int=0) and database is not None:
+        telemetry = await TradeRepository(database).get_telemetry(principal.organization_id)
+        return TradeTelemetry.model_validate(dict(telemetry))
     return TradeTelemetry(
         trade_cases=TELEMETRY_TRADE_CASES,
         trade_cases_count=20,

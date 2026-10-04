@@ -225,6 +225,91 @@ async def test_telemetry_endpoint_returns_static_payload_without_external_state(
 
 
 @pytest.mark.asyncio
+async def test_telemetry_metrics_are_recalculated_from_live_settlement_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telemetry = {
+        "trade_cases": [
+            {
+                "trade_reference": "TR-LIVE-001",
+                "goods": "Coffee beans",
+                "route": "KE -> GH",
+                "hs_code": "090111",
+                "cif_value": 1000,
+                "duty_exemption": 100,
+                "rigs_score": 77.0,
+                "settlement": "PROCESSING",
+                "status": "SETTLEMENT_PENDING",
+            }
+        ],
+        "trade_cases_count": 1,
+        "preferential_origin": 1,
+        "active_settlements": 1,
+        "avg_rigs": 77.0,
+    }
+
+    class TelemetryConnection:
+        async def fetchrow(self, query: str, organization_id: UUID) -> dict[str, object]:
+            assert "avg(rigs_score) * 100" in query
+            assert "settlement in ('PENDING', 'PROCESSING')" in query
+            assert organization_id == ORGANIZATION_ID
+            return telemetry
+
+    class TelemetryPool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield TelemetryConnection()
+
+    monkeypatch.setattr(app.state, "database", TelemetryPool(), raising=False)
+    app.dependency_overrides[get_telemetry_principal] = lambda: Principal(
+        user_id=UUID("35dd6995-6aeb-4f02-a4f8-82531e5a793b"),
+        email=None,
+        organization_id=ORGANIZATION_ID,
+        role="viewer",
+    )
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/v1/telemetry")
+    finally:
+        app.dependency_overrides.pop(get_telemetry_principal, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_settlements"] == 1
+    assert payload["avg_rigs"] == 77.0
+    assert payload["trade_cases"][0]["settlement"] == "PROCESSING"
+
+
+@pytest.mark.asyncio
+async def test_guest_telemetry_never_reads_live_organization_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RejectingPool:
+        @asynccontextmanager
+        async def acquire(self):
+            raise AssertionError("guest telemetry must not query organization data")
+            yield
+
+    monkeypatch.setattr(app.state, "database", RejectingPool(), raising=False)
+    app.dependency_overrides[get_telemetry_principal] = lambda: Principal(
+        user_id=UUID(int=0),
+        email=None,
+        organization_id=ORGANIZATION_ID,
+        role="viewer",
+    )
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/v1/telemetry")
+    finally:
+        app.dependency_overrides.pop(get_telemetry_principal, None)
+
+    assert response.status_code == 200
+    assert response.json()["trade_cases_count"] == 20
+
+
+@pytest.mark.asyncio
 async def test_static_telemetry_is_available_on_all_route_aliases() -> None:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

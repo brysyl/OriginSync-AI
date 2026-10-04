@@ -247,13 +247,15 @@ class TradeRepository:
         settlement_status = outcome
         async with self.pool.acquire() as connection:
             async with connection.transaction():
-                await connection.execute(
+                updated = await connection.fetchval(
                     """
                     update public.trade_cases
                     set paypal_payout_batch_id = nullif($3, ''), status = $4,
                         settlement_status = $5,
                         settled_at = case when $6 then now() else null end
                     where id = $1 and organization_id = $2
+                      and settlement_status = 'processing'
+                    returning id
                     """,
                     trade_id,
                     organization_id,
@@ -262,6 +264,8 @@ class TradeRepository:
                     settlement_status,
                     outcome == "completed",
                 )
+                if updated is None:
+                    return
                 await connection.execute(
                     """
                     insert into public.agent_events
@@ -276,23 +280,30 @@ class TradeRepository:
                     json.dumps({"batch_id": batch_id, "outcome": outcome}),
                 )
 
-    async def set_payout_started(
+    async def start_payout(
         self,
         organization_id: UUID,
         trade_id: UUID,
         sender_batch_id: str,
-    ) -> None:
+    ) -> bool:
         async with self.pool.acquire() as connection:
-            await connection.execute(
-                """
-                update public.trade_cases
-                set paypal_sender_batch_id = $3
-                where id = $1 and organization_id = $2
-                """,
-                trade_id,
-                organization_id,
-                sender_batch_id,
-            )
+            async with connection.transaction():
+                started = await connection.fetchval(
+                    """
+                    update public.trade_cases
+                    set paypal_sender_batch_id = $3, status = 'settlement_pending',
+                        settlement_status = 'processing'
+                    where id = $1 and organization_id = $2
+                      and status = 'settlement_pending'
+                      and settlement_status = 'pending'
+                      and paypal_sender_batch_id is null
+                    returning id
+                    """,
+                    trade_id,
+                    organization_id,
+                    sender_batch_id,
+                )
+                return started is not None
 
     async def mark_failed(self, organization_id: UUID, trade_id: UUID, code: str) -> None:
         async with self.pool.acquire() as connection:
@@ -546,9 +557,13 @@ class TradeRepository:
                     set status = $2, settlement_status = $3,
                         settled_at = case when $3 = 'completed' then now() else null end,
                         paypal_payout_batch_id = coalesce(paypal_payout_batch_id, $1)
-                    where ($1 is not null and paypal_payout_batch_id = $1)
-                       or ($4 is not null and paypal_sender_batch_id = $4)
-                       or ($5 is not null and id = $5)
+                          where (($1 is not null and paypal_payout_batch_id = $1)
+                              or ($4 is not null and paypal_sender_batch_id = $4)
+                              or ($5 is not null and id = $5))
+                             and ($1 is null or paypal_payout_batch_id = $1)
+                             and ($4 is null or paypal_sender_batch_id = $4)
+                             and ($5 is null or id = $5)
+                             and settlement_status in ('pending', 'processing')
                     returning id, organization_id
                     """,
                     batch_id,
@@ -570,3 +585,57 @@ class TradeRepository:
                             {"event_id": event_id, "outcome": outcome, "batch_id": batch_id}
                         ),
                     )
+
+    async def get_telemetry(self, organization_id: UUID) -> dict[str, Any]:
+        async with self.pool.acquire() as connection:
+            return await connection.fetchrow(
+                """
+                with cases as (
+                    select
+                        coalesce(data->>'external_reference', data->>'reference_number',
+                                 data->>'id') as trade_reference,
+                        data->>'goods_description' as goods,
+                        (data->>'origin_country') || ' -> ' || (data->>'destination_country')
+                            as route,
+                        data->>'hs_code' as hs_code,
+                        coalesce(nullif(data->>'cif_amount', ''), '0')::numeric as cif_value,
+                        case
+                            when nullif(data->>'origin_eligible', '')::boolean is true
+                            then coalesce(nullif(data->>'preferential_margin', '')::numeric, 0)
+                                 * coalesce(nullif(data->>'cif_amount', ''), '0')::numeric
+                            else 0
+                        end as duty_exemption,
+                        nullif(data->>'rigs_score', '')::numeric as rigs_score,
+                        upper(coalesce(data->>'settlement_status', 'not_eligible')) as settlement,
+                        upper(coalesce(data->>'status', 'received')) as status,
+                        coalesce(nullif(data->>'created_at', '')::timestamptz, to_timestamp(0))
+                            as created_at
+                    from (
+                        select to_jsonb(trade_case) as data
+                        from public.trade_cases as trade_case
+                        where trade_case.organization_id = $1
+                    ) source
+                )
+                select
+                    coalesce(
+                        jsonb_agg(jsonb_build_object(
+                            'trade_reference', trade_reference,
+                            'goods', goods,
+                            'route', route,
+                            'hs_code', hs_code,
+                            'cif_value', cif_value,
+                            'duty_exemption', duty_exemption,
+                            'rigs_score', rigs_score * 100,
+                            'settlement', settlement,
+                            'status', status
+                        ) order by created_at desc), '[]'::jsonb
+                    ) as trade_cases,
+                    count(*)::integer as trade_cases_count,
+                    count(*) filter (where duty_exemption > 0)::integer as preferential_origin,
+                    count(*) filter (where settlement in ('PENDING', 'PROCESSING'))::integer
+                        as active_settlements,
+                    coalesce(avg(rigs_score) * 100, 0)::double precision as avg_rigs
+                from cases
+                """,
+                organization_id,
+            )

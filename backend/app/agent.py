@@ -12,7 +12,7 @@ from app.models import TradeCreate, TradeResult, TradeStatus
 from app.repositories import TradeRepository
 from app.services.compliance import decide_origin
 from app.services.paypal import PayPalService
-from app.services.rigs import calculate_rigs
+from app.services.rigs import calculate_rigs, requires_settlement_review
 from app.services.storage import SupabaseStorage
 from app.services.vertex import VertexService
 
@@ -184,6 +184,7 @@ class OrderAgent:
             can_settle = (
                 origin.verified
                 and threshold_met
+                and not requires_settlement_review(rigs.score)
                 and trade.beneficiary_email is not None
                 and trade.settlement_amount is not None
                 and beneficiary_verified
@@ -191,7 +192,13 @@ class OrderAgent:
             beneficiary_review_required = (
                 trade.settlement_amount is not None and not beneficiary_verified
             )
+            low_rigs_review = (
+                trade.settlement_amount is not None and requires_settlement_review(rigs.score)
+            )
             status = (
+                TradeStatus.FLAGGED_FOR_REVIEW.value
+                if low_rigs_review
+                else
                 TradeStatus.SETTLEMENT_PENDING.value
                 if can_settle
                 else TradeStatus.REVIEW_REQUIRED.value
@@ -200,7 +207,13 @@ class OrderAgent:
                 if origin.verified and threshold_met
                 else TradeStatus.REVIEW_REQUIRED.value
             )
-            settlement_status = "processing" if can_settle else "not_eligible"
+            settlement_status = (
+                "flagged_for_review"
+                if low_rigs_review
+                else "pending"
+                if can_settle
+                else "not_eligible"
+            )
             await self.repository.record_decision(
                 organization_id=organization_id,
                 trade_id=trade_id,
@@ -227,12 +240,26 @@ class OrderAgent:
                     "settlement_blocked_unverified_beneficiary",
                     {"reason": "beneficiary must be verified by an organization administrator"},
                 )
+            if low_rigs_review:
+                await self.repository.record_stage(
+                    organization_id,
+                    trade_id,
+                    "decide",
+                    "settlement_flagged_low_rigs",
+                    {"rigs_score": rigs.score, "minimum_score": 0.75},
+                )
             if can_settle:
-                await self.repository.set_payout_started(
+                payout_claimed = await self.repository.start_payout(
                     organization_id,
                     trade_id,
                     f"originsync-{trade_id}",
                 )
+                if not payout_claimed:
+                    raise ServiceError(
+                        "settlement_already_started",
+                        "Settlement execution was already claimed for this trade.",
+                        409,
+                    )
                 await self.repository.record_stage(
                     organization_id,
                     trade_id,
