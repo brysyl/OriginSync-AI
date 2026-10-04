@@ -43,14 +43,23 @@ frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "out"
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    from supabase import create_client
+
     settings = get_settings()
     settings.validate_runtime_configuration()
     database = await create_pool(settings.database_url)
+    assert settings.supabase_url is not None
+    assert settings.supabase_service_role_key is not None
+    supabase = create_client(
+        settings.supabase_url,
+        settings.supabase_service_role_key.get_secret_value(),
+    )
     vertex: VertexService | None = None
     try:
         vertex = VertexService(settings, database)
         application.state.settings = settings
         application.state.database = database
+        application.state.supabase = supabase
         application.state.agent = OrderAgent(
             settings=settings,
             database=database,
@@ -426,7 +435,7 @@ async def get_trade_telemetry(
     request: Request,
     principal: Principal = Depends(get_telemetry_principal),
 ) -> TradeTelemetry:
-    repository = TradeRepository(request.app.state.database)
+    repository = TradeRepository(request.app.state.database, request.app.state.supabase)
     cases = await repository.list_telemetry_cases()
     rigs_scores = [
         float(case["rigs_score"])
@@ -436,9 +445,12 @@ async def get_trade_telemetry(
     ]
     return TradeTelemetry(
         cases=cases,
+        trade_cases=len(cases),
         trade_cases_count=len(cases),
+        preferential_origin=sum(score >= 70.0 for score in rigs_scores),
         active_settlements=sum(
-            case.get("settlement") in {"pending", "processing"} for case in cases
+            str(case.get("settlement", "")).upper() in {"PENDING", "PROCESSING"}
+            for case in cases
         ),
         avg_rigs=sum(rigs_scores) / len(rigs_scores) if rigs_scores else 0.0,
     )

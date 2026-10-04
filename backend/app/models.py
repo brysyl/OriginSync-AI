@@ -141,7 +141,9 @@ class TelemetryCase(BaseModel):
 
 class TradeTelemetry(BaseModel):
     cases: list[TelemetryCase]
+    trade_cases: int
     trade_cases_count: int
+    preferential_origin: int
     active_settlements: int
     avg_rigs: float
 

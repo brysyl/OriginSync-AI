@@ -162,15 +162,58 @@ async def test_list_cases_normalizes_seeded_trade_case_columns() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_telemetry_cases_queries_unscoped_and_returns_mock_when_empty() -> None:
-    connection = StubConnection([])
-    repository = TradeRepository(StubPool(connection))  # type: ignore[arg-type]
+async def test_list_telemetry_cases_queries_supabase_unscoped_and_maps_columns() -> None:
+    class Query:
+        def __init__(self) -> None:
+            self.table_name = ""
+            self.columns = ""
+
+        def table(self, table_name: str) -> "Query":
+            self.table_name = table_name
+            return self
+
+        def select(self, columns: str) -> "Query":
+            self.columns = columns
+            return self
+
+        def execute(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                data=[
+                    {
+                        "organization_id": UUID("afd7ea02-8e5d-468d-a551-8d0aa2855102"),
+                        "reference_number": "TR-1",
+                        "goods_description": "Coffee",
+                        "origin_country": "KE",
+                        "destination_country": "GH",
+                        "hs_code": "090111",
+                        "cif_amount": Decimal("100"),
+                        "origin_eligible": True,
+                        "rigs_score": 80,
+                        "settlement_status": "PENDING",
+                        "case_status": "verified",
+                    }
+                ]
+            )
+
+    query = Query()
+    repository = TradeRepository(StubPool(StubConnection([])), query)  # type: ignore[arg-type]
 
     cases = await repository.list_telemetry_cases()
 
-    assert connection.query == "SELECT * FROM trade_cases ORDER BY created_at DESC LIMIT 50"
-    assert connection.args == ()
-    assert len(cases) == 3
+    assert query.table_name == "trade_cases"
+    assert query.columns == "*"
+    assert len(cases) == 1
+    assert cases[0] == {
+        "trade_reference": "TR-1",
+        "goods": "Coffee",
+        "route": "KE → GH",
+        "hs_code": "090111",
+        "cif_value": Decimal("100"),
+        "duty_exemption": True,
+        "rigs_score": 80,
+        "settlement": "PENDING",
+        "status": "verified",
+    }
     assert set(cases[0]) == {
         "trade_reference",
         "goods",
@@ -202,8 +245,8 @@ async def test_telemetry_endpoint_calculates_metrics_from_database_cases(
             "hs_code": "090111",
             "cif_value": Decimal("100"),
             "duty_exemption": True,
-            "rigs_score": Decimal("0.8"),
-            "settlement": "pending",
+            "rigs_score": Decimal("80"),
+            "settlement": "PENDING",
             "status": "verified",
         },
         {
@@ -213,7 +256,7 @@ async def test_telemetry_endpoint_calculates_metrics_from_database_cases(
             "hs_code": "180100",
             "cif_value": Decimal("200"),
             "duty_exemption": False,
-            "rigs_score": Decimal("0.6"),
+            "rigs_score": Decimal("60"),
             "settlement": "completed",
             "status": "settled",
         },
@@ -225,14 +268,17 @@ async def test_telemetry_endpoint_calculates_metrics_from_database_cases(
     monkeypatch.setitem(app.dependency_overrides, get_telemetry_principal, lambda: principal)
     monkeypatch.setattr(TradeRepository, "list_telemetry_cases", list_telemetry_cases)
     monkeypatch.setattr(app.state, "database", object(), raising=False)
+    monkeypatch.setattr(app.state, "supabase", object(), raising=False)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/v1/telemetry")
 
     assert response.status_code == 200
+    assert response.json()["trade_cases"] == 2
     assert response.json()["trade_cases_count"] == 2
+    assert response.json()["preferential_origin"] == 1
     assert response.json()["active_settlements"] == 1
-    assert response.json()["avg_rigs"] == pytest.approx(0.7)
+    assert response.json()["avg_rigs"] == pytest.approx(70.0)
     assert response.json()["cases"][0]["trade_reference"] == "TR-1"
 
 
